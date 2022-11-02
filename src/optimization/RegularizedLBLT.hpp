@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <vector>
 
-#include <Eigen/SparseCholesky>
+#include <Eigen/BlockedLBLT.h>
 #include <Eigen/SparseCore>
 
 namespace sleipnir {
@@ -41,19 +41,19 @@ class Inertia {
 };
 
 /**
- * Solves systems of linear equations using a regularized LDLT factorization.
+ * Solves systems of linear equations using a regularized LBLT factorization.
  */
-class RegularizedLDLT {
+class RegularizedLBLT {
  public:
   /**
-   * Constructs a RegularizedLDLT instance.
+   * Constructs a RegularizedLBLT instance.
    *
    * @param theta_mu Barrier parameter superlinear decrease power (1, 2)
    */
-  explicit RegularizedLDLT(double theta_mu) : m_theta_mu{theta_mu} {}
+  explicit RegularizedLBLT(double theta_mu) : m_theta_mu{theta_mu} {}
 
   /**
-   * Solve the system of equations using a regularized LDLT factorization.
+   * Solve the system of equations using a regularized LBLT factorization.
    *
    * @param lhs Left-hand side of the system.
    * @param rhs Right-hand side of the system.
@@ -125,7 +125,7 @@ class RegularizedLDLT {
   }
 
  private:
-  Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> m_solver;
+  Eigen::BlockedLBLT<Eigen::SparseMatrix<double>> m_solver;
 
   double m_theta_mu;
 
@@ -134,14 +134,14 @@ class RegularizedLDLT {
   std::vector<Eigen::Triplet<double>> m_triplets;
 
   static Inertia ComputeInertia(
-      const Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>& solver) {
+      const Eigen::BlockedLBLT<Eigen::SparseMatrix<double>>& solver) {
     Inertia inertia;
 
-    auto D = solver.vectorD();
-    for (int row = 0; row < D.rows(); ++row) {
-      if (D(row) > 0.0) {
+    Eigen::SparseMatrix<double> B = solver.matrixB();
+    for (int row = 0; row < B.rows(); ++row) {
+      if (B.coeff(row, row) > 0.0) {
         ++inertia.positive;
-      } else if (D(row) < 0.0) {
+      } else if (B.coeff(row, row) < 0.0) {
         ++inertia.negative;
       } else {
         ++inertia.zero;

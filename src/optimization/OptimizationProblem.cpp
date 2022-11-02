@@ -13,7 +13,7 @@
 #include <Eigen/SparseCore>
 #include <fmt/core.h>
 
-#include "RegularizedLDLT.hpp"
+#include "RegularizedLBLT.hpp"
 #include "ScopeExit.hpp"
 #include "sleipnir/autodiff/Expression.hpp"
 #include "sleipnir/autodiff/ExpressionGraph.hpp"
@@ -589,7 +589,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     }
   }};
 
-  RegularizedLDLT solver{theta_mu};
+  RegularizedLBLT solver{theta_mu};
 
   while (E_mu > m_config.tolerance) {
     while (true) {
