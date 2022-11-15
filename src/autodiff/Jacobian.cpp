@@ -181,37 +181,21 @@ void Jacobian::Update(IntrusiveSharedPtr<Expression> node) {
 }
 
 void Jacobian::Update() {
-  // std::vector<Expression*> stack;
-  // for (size_t row = 0; row < m_graph.size(); ++row) {
-  //   auto& root = m_variables(row).expr;
-  //   Update(root);
-  //   // Zero duplications used by Update method.
-  //   root->duplications = 0;
-  //   stack.emplace_back(root.Get());
-  //   while (!stack.empty()) {
-  //     auto& currentNode = stack.back();
-  //     stack.pop_back();
-
-  //     for (auto&& arg : currentNode->args) {
-  //       if (arg != nullptr && arg->expressionType != ExpressionType::kConstant && arg->duplications != 0) {
-  //         stack.push_back(arg.Get());
-  //         arg->duplications = 0;
-  //       }
-  //     }
-  //   }
-  // }
+  std::vector<Expression*> stack;
   for (size_t row = 0; row < m_graph.size(); ++row) {
-    for (int col = m_graph[row].size() - 1; col >= 0; --col) {
-      auto& node = m_graph[row][col];
+    auto& root = m_variables(row).expr;
+    Update(root);
+    // Zero duplications used by Update method.
+    root->duplications = 0;
+    stack.emplace_back(root.Get());
+    while (!stack.empty()) {
+      auto& currentNode = stack.back();
+      stack.pop_back();
 
-      auto& lhs = node->args[0];
-      auto& rhs = node->args[1];
-
-      if (lhs != nullptr) {
-        if (rhs != nullptr) {
-          node->value = node->valueFunc(lhs->value, rhs->value);
-        } else {
-          node->value = node->valueFunc(lhs->value, 0.0);
+      for (auto&& arg : currentNode->args) {
+        if (arg != nullptr && arg->expressionType != ExpressionType::kConstant && arg->duplications != 0) {
+          stack.push_back(arg.Get());
+          arg->duplications = 0;
         }
       }
     }
