@@ -62,6 +62,8 @@ class SLEIPNIR_DLLEXPORT Jacobian {
 
   Profiler m_profiler;
 
+  void Update(IntrusiveSharedPtr<Expression> node);
+
   /**
    * Computes the gradient for the given row and stores its triplets in
    * "triplets".

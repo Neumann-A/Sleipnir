@@ -4,19 +4,28 @@
 
 #include "sleipnir/autodiff/Gradient.hpp"
 
+#include <iostream>
+
 using namespace sleipnir::autodiff;
 
 Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
     : m_variables{std::move(variables)}, m_wrt{std::move(wrt)} {
   m_profiler.StartSetup();
 
+  // Reserve triplet space for 99% sparsity
+  m_cachedTriplets.reserve(m_variables.rows() * m_wrt.rows() * 0.01);
+
+  for (int row = 0; row < m_wrt.rows(); ++row) {
+    m_wrt(row).expr->row = row;
+  }
+
   std::vector<Expression*> row;
   std::vector<Expression*> stack;
-  for (Variable variable : m_variables) {
+  for (int rowIndex = 0; rowIndex < m_variables.size(); ++rowIndex) {
     // BFS
     row.clear();
 
-    stack.emplace_back(variable.expr.Get());
+    stack.emplace_back(m_variables(rowIndex).expr.Get());
 
     // Initialize the number of instances of each node in the tree
     // (Expression::duplications)
@@ -38,17 +47,16 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
       }
     }
 
-    stack.clear();
-    stack.emplace_back(variable.expr.Get());
+    stack.emplace_back(m_variables(rowIndex).expr.Get());
 
     while (!stack.empty()) {
-      auto& currentNode = stack.back();
+      auto& node = stack.back();
       stack.pop_back();
 
       // BFS tape sorted from parent to child.
-      row.emplace_back(currentNode);
-
-      for (auto&& arg : currentNode->args) {
+      row.emplace_back(node);
+      
+      for (auto&& arg : node->args) {
         // Only add node if it's not a constant and doesn't already exist in the
         // tape.
         if (arg != nullptr && arg->type != ExpressionType::kConstant) {
@@ -57,9 +65,58 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
           // that this means the node is only enqueued once.
           --arg->duplications;
           if (arg->duplications == 0) {
-            stack.push_back(arg.Get());
+            stack.emplace_back(arg.Get());
           }
         }
+      }
+    }
+
+    // Cache linear paths.
+    for (auto col : row) {
+      col->adjoint = 0.0;
+    }
+    row[0]->adjoint = 1.0;
+    row[0]->duplications = row[0]->isLinearOperator ? 1 : 0;
+
+    for (auto col : row) {
+      auto& lhs = col->args[0];
+      auto& rhs = col->args[1];
+
+      // If the node's number of instances in linear paths in non-zero (it exists in a linear path), push adjoints.
+      if (col->duplications != 0) {
+        if (lhs != nullptr) {
+          // Add instance of node if it's contained in a linear path.
+          lhs->duplications += lhs->isLinearOperator ? 1 : 0;
+          if (rhs != nullptr) {
+            rhs->duplications += rhs->isLinearOperator ? 1 : 0;
+            lhs->adjoint +=
+                col->gradientValueFuncs[0](lhs->value, rhs->value, col->adjoint);
+            rhs->adjoint +=
+                col->gradientValueFuncs[1](lhs->value, rhs->value, col->adjoint);
+          } else {
+            lhs->adjoint +=
+                col->gradientValueFuncs[0](lhs->value, 0.0, col->adjoint);
+          }
+        }
+      }
+
+      if (col->row != -1) {
+        m_cachedTriplets.emplace_back(rowIndex, col->row, col->adjoint);
+      }
+    }
+
+    // If node is nonlinear, it's contained in nonlinear path; remove it from linear path instances.
+    for (auto col : row) {
+      if (col->type != ExpressionType::kLinear) {
+        col->duplications = 0;
+      }
+    }
+
+    // Remove nodes not contained in nonlinear paths.
+    for (int col = row.size() - 1; col >= 0; --col) {
+      if (row[col]->duplications != 0) {
+        row[col]->duplications = 0;
+        row.erase(row.begin() + col);
       }
     }
 
@@ -67,41 +124,13 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
   }
 
   for (int row = 0; row < m_wrt.rows(); ++row) {
-    m_wrt(row).expr->row = row;
-  }
-
-  // Reserve triplet space for 99% sparsity
-  m_cachedTriplets.reserve(m_variables.rows() * m_wrt.rows() * 0.01);
-
-  for (int row = 0; row < m_variables.rows(); ++row) {
-    if (m_variables(row).expr->type == ExpressionType::kLinear) {
-      // If the row is linear, compute its gradient once here and cache its
-      // triplets. Constant rows are ignored because their gradients have no
-      // nonzero triplets.
-      ComputeRow(row, m_cachedTriplets);
-    } else if (m_variables(row).expr->type > ExpressionType::kLinear) {
-      // If the row is quadratic or nonlinear, add it to the list of nonlinear
-      // rows to be recomputed in Calculate().
-      m_nonlinearRows.emplace_back(row);
-    }
-  }
-
-  for (int row = 0; row < m_wrt.rows(); ++row) {
     m_wrt(row).expr->row = -1;
-  }
-
-  if (m_nonlinearRows.empty()) {
-    m_J.setFromTriplets(m_cachedTriplets.begin(), m_cachedTriplets.end());
   }
 
   m_profiler.StopSetup();
 }
 
 const Eigen::SparseMatrix<double>& Jacobian::Calculate() {
-  if (m_nonlinearRows.empty()) {
-    return m_J;
-  }
-
   m_profiler.StartSolve();
 
   Update();
@@ -114,7 +143,7 @@ const Eigen::SparseMatrix<double>& Jacobian::Calculate() {
   // thrown away at the end of the function
   auto triplets = m_cachedTriplets;
 
-  for (int row : m_nonlinearRows) {
+  for (int row = 0; row < m_variables.size(); ++row) {
     ComputeRow(row, triplets);
   }
 
@@ -129,22 +158,51 @@ const Eigen::SparseMatrix<double>& Jacobian::Calculate() {
   return m_J;
 }
 
-void Jacobian::Update() {
-  for (size_t row = 0; row < m_graph.size(); ++row) {
-    for (int col = m_graph[row].size() - 1; col >= 0; --col) {
-      auto& node = m_graph[row][col];
-
-      auto& lhs = node->args[0];
-      auto& rhs = node->args[1];
-
-      if (lhs != nullptr) {
-        if (rhs != nullptr) {
-          node->value = node->valueFunc(lhs->value, rhs->value);
-        } else {
-          node->value = node->valueFunc(lhs->value, 0.0);
-        }
+void Jacobian::Update(IntrusiveSharedPtr<Expression> node) { 
+  if (node->duplications == 0) {
+    for (auto arg : node->args) {
+      if (arg != nullptr) {
+        Update(arg);
+        arg->duplications = 0;
       }
     }
+  }
+  auto& lhs = node->args[0];
+  auto& rhs = node->args[1];
+
+  if (lhs != nullptr) {
+    if (rhs != nullptr) {
+      node->value = node->valueFunc(lhs->value, rhs->value);
+    } else {
+      node->value = node->valueFunc(lhs->value, 0.0);
+    }
+  }
+
+  ++node->duplications;
+}
+
+void Jacobian::Update() {
+  // TODO: Make update method exploit duplications. Previous method doesn't work anymore as 
+  // elements may be pruned from the BFS tape.
+  // for (size_t row = 0; row < m_graph.size(); ++row) {
+  //   for (int col = m_graph[row].size() - 1; col >= 0; --col) {
+  //     auto& node = m_graph[row][col];
+
+  //     auto& lhs = node->args[0];
+  //     auto& rhs = node->args[1];
+
+  //     if (lhs != nullptr) {
+  //       if (rhs != nullptr) {
+  //         node->value = node->valueFunc(lhs->value, rhs->value);
+  //       } else {
+  //         node->value = node->valueFunc(lhs->value, 0.0);
+  //       }
+  //     }
+  //   }
+  // }
+  for (size_t row = 0; row < m_graph.size(); ++row) {
+    Update(m_variables(row).expr);
+    // m_variables(row).Update();
   }
 }
 
@@ -155,6 +213,10 @@ Profiler& Jacobian::GetProfiler() {
 void Jacobian::ComputeRow(int rowIndex,
                           std::vector<Eigen::Triplet<double>>& triplets) {
   auto& row = m_graph[rowIndex];
+
+  if (row.size() == 0) {
+    return;
+  }
 
   for (auto col : row) {
     col->adjoint = 0.0;

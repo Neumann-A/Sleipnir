@@ -148,6 +148,9 @@ TEST(HessianTest, SumOfSquaredResiduals) {
   EXPECT_EQ(-2 * x[3] + 2 * x[4], g(4));
 
   H = sleipnir::autodiff::Hessian{y, x}.Calculate();
+
+  std::cout << H << std::endl;
+
   EXPECT_EQ(2.0, H(0, 0));
   EXPECT_EQ(-2.0, H(0, 1));
   EXPECT_EQ(0.0, H(0, 2));

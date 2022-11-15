@@ -64,6 +64,9 @@ struct SLEIPNIR_DLLEXPORT Expression {
   /// Expression argument type.
   ExpressionType type = sleipnir::autodiff::ExpressionType::kLinear;
 
+  /// If the operator is linear, e.g. given a linear input produces a linear output.
+  bool isLinearOperator;
+
   /// Either nullary operator with no arguments, unary operator with one
   /// argument, or binary operator with two arguments. This operator is
   /// used to update the node's value.
@@ -142,12 +145,15 @@ struct SLEIPNIR_DLLEXPORT Expression {
    * Constructs an unary expression (an operator with one argument).
    *
    * @param type The expression's type.
+   * @param isLinearOperator If operator is linear.
    * @param valueFunc Unary operator that produces this expression's value.
    * @param lhsGradientValueFunc Gradient with respect to the operand.
    * @param lhsGradientFunc Gradient with respect to the operand.
    * @param lhs Unary operator's operand.
    */
-  Expression(ExpressionType type, BinaryFuncDouble valueFunc,
+  Expression(ExpressionType type, 
+             bool isLinearOperator,
+             BinaryFuncDouble valueFunc,
              TrinaryFuncDouble lhsGradientValueFunc,
              TrinaryFuncExpr lhsGradientFunc,
              sleipnir::IntrusiveSharedPtr<Expression> lhs);
@@ -156,6 +162,7 @@ struct SLEIPNIR_DLLEXPORT Expression {
    * Constructs a binary expression (an operator with two arguments).
    *
    * @param type The expression's type.
+   * @param isLinearOperator If operator is linear.
    * @param valueFunc Unary operator that produces this expression's value.
    * @param lhsGradientValueFunc Gradient with respect to the left operand.
    * @param rhsGradientValueFunc Gradient with respect to the right operand.
@@ -164,7 +171,9 @@ struct SLEIPNIR_DLLEXPORT Expression {
    * @param lhs Binary operator's left operand.
    * @param rhs Binary operator's right operand.
    */
-  Expression(ExpressionType type, BinaryFuncDouble valueFunc,
+  Expression(ExpressionType type, 
+             bool isLinearOperator,
+             BinaryFuncDouble valueFunc,
              TrinaryFuncDouble lhsGradientValueFunc,
              TrinaryFuncDouble rhsGradientValueFunc,
              TrinaryFuncExpr lhsGradientFunc, TrinaryFuncExpr rhsGradientFunc,
