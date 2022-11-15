@@ -842,7 +842,6 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       SetAD(sAD, s);
       SetAD(yAD, y);
       SetAD(zAD, z);
-      L.Update();
 
       auto innerIterEndTime = std::chrono::system_clock::now();
 
