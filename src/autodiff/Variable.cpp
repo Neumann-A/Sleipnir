@@ -221,7 +221,7 @@ ExpressionType Variable::Type() const {
   if (expr == nullptr) {
     return ExpressionType::kNone;
   } else {
-    return expr->type;
+    return expr->expressionType;
   }
 }
 

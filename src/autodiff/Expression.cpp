@@ -6,8 +6,6 @@
 #include <numbers>
 #include <type_traits>
 
-#include "Indexer.hpp"
-
 // https://en.cppreference.com/w/cpp/utility/to_underlying from C++23
 template <class Enum>
 constexpr std::underlying_type_t<Enum> to_underlying(Enum e) noexcept {
@@ -22,25 +20,24 @@ PoolAllocator<Expression> Allocator() {
 }
 
 Expression::Expression(double value, ExpressionType type)
-    : value{value}, id{Indexer::GetIndex()}, type{type}, isLinearOperator{true} {}
+    : value{value}, expressionType{type} {}
 
-Expression::Expression(ExpressionType type, 
-                       bool isLinearOperator,
+Expression::Expression(ExpressionType expressionType, 
+                       OperatorType operatorType,
                        BinaryFuncDouble valueFunc,
                        TrinaryFuncDouble lhsGradientValueFunc,
                        TrinaryFuncExpr lhsGradientFunc,
                        IntrusiveSharedPtr<Expression> lhs)
     : value{valueFunc(lhs->value, 0.0)},
-      id{Indexer::GetIndex()},
-      type{type},
-      isLinearOperator{isLinearOperator},
+      expressionType{expressionType},
+      operatorType{operatorType},
       valueFunc{valueFunc},
       gradientValueFuncs{lhsGradientValueFunc, TrinaryFuncDouble{}},
       gradientFuncs{lhsGradientFunc, TrinaryFuncExpr{}},
       args{lhs, nullptr} {}
 
-Expression::Expression(ExpressionType type,
-                       bool isLinearOperator,
+Expression::Expression(ExpressionType expressionType,
+                       OperatorType operatorType,
                        BinaryFuncDouble valueFunc,
                        TrinaryFuncDouble lhsGradientValueFunc,
                        TrinaryFuncDouble rhsGradientValueFunc,
@@ -50,9 +47,8 @@ Expression::Expression(ExpressionType type,
                        IntrusiveSharedPtr<Expression> rhs)
     : value{valueFunc(lhs != nullptr ? lhs->value : 0.0,
                       rhs != nullptr ? rhs->value : 0.0)},
-      id{Indexer::GetIndex()},
-      type{type},
-      isLinearOperator{isLinearOperator},
+      expressionType{expressionType},
+      operatorType{operatorType},
       valueFunc{valueFunc},
       gradientValueFuncs{lhsGradientValueFunc, rhsGradientValueFunc},
       gradientFuncs{lhsGradientFunc, rhsGradientFunc},
@@ -87,7 +83,7 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator*(
     return nullptr;
   }
 
-  if (lhs->type == ExpressionType::kConstant) {
+  if (lhs->expressionType == ExpressionType::kConstant) {
     if (lhs->value == 1.0) {
       return rhs;
     } else if (lhs->value == 0.0) {
@@ -95,7 +91,7 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator*(
     }
   }
 
-  if (rhs->type == ExpressionType::kConstant) {
+  if (rhs->expressionType == ExpressionType::kConstant) {
     if (rhs->value == 1.0) {
       return lhs;
     } else if (rhs->value == 0.0) {
@@ -104,23 +100,23 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator*(
   }
 
   // Evaluate the expression's type
-  ExpressionType type;
-  bool isLinearOperator = false;
-  if (lhs->type == ExpressionType::kConstant) {
-    type = rhs->type;
-    isLinearOperator = true;
-  } else if (rhs->type == ExpressionType::kConstant) {
-    type = lhs->type;
-    isLinearOperator = true;
-  } else if (lhs->type == ExpressionType::kLinear &&
-             rhs->type == ExpressionType::kLinear) {
-    type = ExpressionType::kQuadratic;
+  ExpressionType expressionType;
+  OperatorType operatorType = OperatorType::kNonlinear;
+  if (lhs->expressionType == ExpressionType::kConstant) {
+    expressionType = rhs->expressionType;
+    operatorType = OperatorType::kLinear;
+  } else if (rhs->expressionType == ExpressionType::kConstant) {
+    expressionType = lhs->expressionType;
+    operatorType = OperatorType::kLinear;
+  } else if (lhs->expressionType == ExpressionType::kLinear &&
+             rhs->expressionType == ExpressionType::kLinear) {
+    expressionType = ExpressionType::kQuadratic;
   } else {
-    type = ExpressionType::kNonlinear;
+    expressionType = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, isLinearOperator,
+      Allocator(), expressionType, operatorType,
       [](double lhs, double rhs) { return lhs * rhs; },
       [](double lhs, double rhs, double parentAdjoint) {
         return parentAdjoint * rhs;
@@ -163,16 +159,17 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator/(
   }
 
   // Evaluate the expression's type
-  ExpressionType type;
-  if (rhs->type == ExpressionType::kConstant) {
-    type = lhs->type;
+  OperatorType operatorType = (rhs->expressionType == ExpressionType::kConstant) ? 
+                               OperatorType::kLinear : OperatorType::kNonlinear;
+  ExpressionType expressionType;
+  if (rhs->expressionType == ExpressionType::kConstant) {
+    expressionType = lhs->expressionType;
   } else {
-    type = ExpressionType::kNonlinear;
+    expressionType = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, 
-      rhs->type == ExpressionType::kConstant,
+      Allocator(), expressionType, operatorType,
       [](double lhs, double rhs) { return lhs / rhs; },
       [](double lhs, double rhs, double parentAdjoint) {
         return parentAdjoint / rhs;
@@ -223,8 +220,8 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator+(
   return AllocateIntrusiveShared<Expression>(
       Allocator(),
       ExpressionType{
-          std::max(to_underlying(lhs->type), to_underlying(rhs->type))},
-      true,
+          std::max(to_underlying(lhs->expressionType), to_underlying(rhs->expressionType))},
+      OperatorType::kLinear,
       [](double lhs, double rhs) { return lhs + rhs; },
       [](double lhs, double rhs, double parentAdjoint) {
         return parentAdjoint;
@@ -278,8 +275,8 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator-(
   return AllocateIntrusiveShared<Expression>(
       Allocator(),
       ExpressionType{
-          std::max(to_underlying(lhs->type), to_underlying(rhs->type))},
-      true,
+          std::max(to_underlying(lhs->expressionType), to_underlying(rhs->expressionType))},
+      OperatorType::kLinear,
       [](double lhs, double rhs) { return lhs - rhs; },
       [](double lhs, double rhs, double parentAdjoint) {
         return parentAdjoint;
@@ -307,7 +304,7 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator-(
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), lhs->type, true, [](double lhs, double) { return -lhs; },
+      Allocator(), lhs->expressionType, OperatorType::kLinear, [](double lhs, double) { return -lhs; },
       [](double lhs, double, double parentAdjoint) { return -parentAdjoint; },
       [](const IntrusiveSharedPtr<Expression>& lhs,
          const IntrusiveSharedPtr<Expression>& rhs,
@@ -324,7 +321,7 @@ SLEIPNIR_DLLEXPORT IntrusiveSharedPtr<Expression> operator+(
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), lhs->type, true, [](double lhs, double) { return lhs; },
+      Allocator(), lhs->expressionType, OperatorType::kLinear, [](double lhs, double) { return lhs; },
       [](double lhs, double, double parentAdjoint) { return parentAdjoint; },
       [](const IntrusiveSharedPtr<Expression>& lhs,
          const IntrusiveSharedPtr<Expression>& rhs,
@@ -363,14 +360,14 @@ IntrusiveSharedPtr<Expression> abs(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::abs(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::abs(x); },
       [](double x, double, double parentAdjoint) {
         if (x < 0.0) {
           return -parentAdjoint;
@@ -402,14 +399,14 @@ IntrusiveSharedPtr<Expression> acos(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::acos(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::acos(x); },
       [](double x, double, double parentAdjoint) {
         return -parentAdjoint / std::sqrt(1.0 - x * x);
       },
@@ -429,14 +426,14 @@ IntrusiveSharedPtr<Expression> asin(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::asin(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::asin(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint / std::sqrt(1.0 - x * x);
       },
@@ -456,14 +453,14 @@ IntrusiveSharedPtr<Expression> atan(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::atan(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::atan(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint / (1.0 + x * x);
       },
@@ -486,15 +483,15 @@ IntrusiveSharedPtr<Expression> atan2(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (y->type == ExpressionType::kConstant &&
-      x->type == ExpressionType::kConstant) {
+  if (y->expressionType == ExpressionType::kConstant &&
+      x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double y, double x) { return std::atan2(y, x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double y, double x) { return std::atan2(y, x); },
       [](double y, double x, double parentAdjoint) {
         return parentAdjoint * x / (y * y + x * x);
       },
@@ -522,14 +519,14 @@ IntrusiveSharedPtr<Expression> cos(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::cos(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::cos(x); },
       [](double x, double, double parentAdjoint) {
         return -parentAdjoint * std::sin(x);
       },
@@ -549,14 +546,14 @@ IntrusiveSharedPtr<Expression> cosh(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::cosh(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::cosh(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint * std::sinh(x);
       },
@@ -579,14 +576,14 @@ IntrusiveSharedPtr<Expression> erf(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::erf(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::erf(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint * 2.0 / sqrt_pi * std::exp(-x * x);
       },
@@ -606,14 +603,14 @@ IntrusiveSharedPtr<Expression> exp(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::exp(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::exp(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint * std::exp(x);
       },
@@ -635,14 +632,14 @@ IntrusiveSharedPtr<Expression> hypot(  // NOLINT
   if (x == nullptr && y != nullptr) {
     // Evaluate the expression's type
     ExpressionType type;
-    if (y->type == ExpressionType::kConstant) {
+    if (y->expressionType == ExpressionType::kConstant) {
       type = ExpressionType::kConstant;
     } else {
       type = ExpressionType::kNonlinear;
     }
 
     return AllocateIntrusiveShared<Expression>(
-        Allocator(), type, false, [](double x, double y) { return std::hypot(x, y); },
+        Allocator(), type, OperatorType::kNonlinear, [](double x, double y) { return std::hypot(x, y); },
         [](double x, double y, double parentAdjoint) {
           return parentAdjoint * x / std::hypot(x, y);
         },
@@ -663,14 +660,14 @@ IntrusiveSharedPtr<Expression> hypot(  // NOLINT
   } else if (x != nullptr && y == nullptr) {
     // Evaluate the expression's type
     ExpressionType type;
-    if (x->type == ExpressionType::kConstant) {
+    if (x->expressionType == ExpressionType::kConstant) {
       type = ExpressionType::kConstant;
     } else {
       type = ExpressionType::kNonlinear;
     }
 
     return AllocateIntrusiveShared<Expression>(
-        Allocator(), type, false, [](double x, double y) { return std::hypot(x, y); },
+        Allocator(), type, OperatorType::kNonlinear, [](double x, double y) { return std::hypot(x, y); },
         [](double x, double y, double parentAdjoint) {
           return parentAdjoint * x / std::hypot(x, y);
         },
@@ -691,15 +688,15 @@ IntrusiveSharedPtr<Expression> hypot(  // NOLINT
   } else {
     // Evaluate the expression's type
     ExpressionType type;
-    if (x->type == ExpressionType::kConstant &&
-        y->type == ExpressionType::kConstant) {
+    if (x->expressionType == ExpressionType::kConstant &&
+        y->expressionType == ExpressionType::kConstant) {
       type = ExpressionType::kConstant;
     } else {
       type = ExpressionType::kNonlinear;
     }
 
     return AllocateIntrusiveShared<Expression>(
-        Allocator(), type, false, [](double x, double y) { return std::hypot(x, y); },
+        Allocator(), type, OperatorType::kNonlinear, [](double x, double y) { return std::hypot(x, y); },
         [](double x, double y, double parentAdjoint) {
           return parentAdjoint * x / std::hypot(x, y);
         },
@@ -728,14 +725,14 @@ IntrusiveSharedPtr<Expression> log(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::log(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::log(x); },
       [](double x, double, double parentAdjoint) { return parentAdjoint / x; },
       [](const IntrusiveSharedPtr<Expression>& x,
          const IntrusiveSharedPtr<Expression>&,
@@ -755,14 +752,14 @@ IntrusiveSharedPtr<Expression> log10(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::log10(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::log10(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint / (ln10 * x);
       },
@@ -786,26 +783,26 @@ IntrusiveSharedPtr<Expression> pow(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (base->type == ExpressionType::kConstant &&
-      power->type == ExpressionType::kConstant) {
+  if (base->expressionType == ExpressionType::kConstant &&
+      power->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
-  } else if (power->type == ExpressionType::kConstant && power->value == 0.0) {
+  } else if (power->expressionType == ExpressionType::kConstant && power->value == 0.0) {
     type = ExpressionType::kConstant;
-  } else if (base->type == ExpressionType::kLinear &&
-             power->type == ExpressionType::kConstant && power->value == 1.0) {
+  } else if (base->expressionType == ExpressionType::kLinear &&
+             power->expressionType == ExpressionType::kConstant && power->value == 1.0) {
     type = ExpressionType::kLinear;
-  } else if (base->type == ExpressionType::kLinear &&
-             power->type == ExpressionType::kConstant && power->value == 2.0) {
+  } else if (base->expressionType == ExpressionType::kLinear &&
+             power->expressionType == ExpressionType::kConstant && power->value == 2.0) {
     type = ExpressionType::kQuadratic;
-  } else if (base->type == ExpressionType::kQuadratic &&
-             power->type == ExpressionType::kConstant && power->value == 1.0) {
+  } else if (base->expressionType == ExpressionType::kQuadratic &&
+             power->expressionType == ExpressionType::kConstant && power->value == 1.0) {
     type = ExpressionType::kQuadratic;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false,
+      Allocator(), type, OperatorType::kNonlinear,
       [](double base, double power) { return std::pow(base, power); },
       [](double base, double power, double parentAdjoint) {
         return parentAdjoint * std::pow(base, power - 1) * power;
@@ -846,14 +843,14 @@ IntrusiveSharedPtr<Expression> sin(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::sin(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::sin(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint * std::cos(x);
       },
@@ -872,14 +869,14 @@ IntrusiveSharedPtr<Expression> sinh(const IntrusiveSharedPtr<Expression>& x) {
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::sinh(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::sinh(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint * std::cosh(x);
       },
@@ -899,14 +896,14 @@ IntrusiveSharedPtr<Expression> sqrt(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::sqrt(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::sqrt(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint / (2.0 * std::sqrt(x));
       },
@@ -926,14 +923,14 @@ IntrusiveSharedPtr<Expression> tan(  // NOLINT
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::tan(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::tan(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint / (std::cos(x) * std::cos(x));
       },
@@ -952,14 +949,14 @@ IntrusiveSharedPtr<Expression> tanh(const IntrusiveSharedPtr<Expression>& x) {
 
   // Evaluate the expression's type
   ExpressionType type;
-  if (x->type == ExpressionType::kConstant) {
+  if (x->expressionType == ExpressionType::kConstant) {
     type = ExpressionType::kConstant;
   } else {
     type = ExpressionType::kNonlinear;
   }
 
   return AllocateIntrusiveShared<Expression>(
-      Allocator(), type, false, [](double x, double) { return std::tanh(x); },
+      Allocator(), type, OperatorType::kNonlinear, [](double x, double) { return std::tanh(x); },
       [](double x, double, double parentAdjoint) {
         return parentAdjoint / (std::cosh(x) * std::cosh(x));
       },

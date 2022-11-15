@@ -36,7 +36,7 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
       for (auto&& arg : currentNode->args) {
         // Only continue if the node is not a constant and hasn't already been
         // explored.
-        if (arg != nullptr && arg->type != ExpressionType::kConstant) {
+        if (arg != nullptr && arg->expressionType != ExpressionType::kConstant) {
           // If this is the first instance of the node encountered (it hasn't
           // been explored yet), add it to stack so it's recursed upon
           if (arg->duplications == 0) {
@@ -59,7 +59,7 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
       for (auto&& arg : node->args) {
         // Only add node if it's not a constant and doesn't already exist in the
         // tape.
-        if (arg != nullptr && arg->type != ExpressionType::kConstant) {
+        if (arg != nullptr && arg->expressionType != ExpressionType::kConstant) {
           // Once the number of node visitations equals the number of
           // duplications (the counter hits zero), add it to the stack. Note
           // that this means the node is only enqueued once.
@@ -76,7 +76,7 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
       col->adjoint = 0.0;
     }
     row[0]->adjoint = 1.0;
-    row[0]->duplications = row[0]->isLinearOperator ? 1 : 0;
+    row[0]->duplications = row[0]->operatorType == OperatorType::kLinear ? 1 : 0;
 
     for (auto col : row) {
       auto& lhs = col->args[0];
@@ -86,9 +86,9 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
       if (col->duplications != 0) {
         if (lhs != nullptr) {
           // Add instance of node if it's contained in a linear path.
-          lhs->duplications += lhs->isLinearOperator ? 1 : 0;
+          lhs->duplications += lhs->operatorType == OperatorType::kLinear ? 1 : 0;
           if (rhs != nullptr) {
-            rhs->duplications += rhs->isLinearOperator ? 1 : 0;
+            rhs->duplications += rhs->operatorType == OperatorType::kLinear ? 1 : 0;
             lhs->adjoint +=
                 col->gradientValueFuncs[0](lhs->value, rhs->value, col->adjoint);
             rhs->adjoint +=
@@ -107,7 +107,7 @@ Jacobian::Jacobian(VectorXvar variables, VectorXvar wrt) noexcept
 
     // If node is nonlinear, it's contained in nonlinear path; remove it from linear path instances.
     for (auto col : row) {
-      if (col->type != ExpressionType::kLinear) {
+      if (col->expressionType != ExpressionType::kLinear) {
         col->duplications = 0;
       }
     }
@@ -201,8 +201,8 @@ void Jacobian::Update() {
   //   }
   // }
   for (size_t row = 0; row < m_graph.size(); ++row) {
-    Update(m_variables(row).expr);
-    // m_variables(row).Update();
+    // Update(m_variables(row).expr);
+    m_variables(row).Update();
   }
 }
 

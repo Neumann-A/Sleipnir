@@ -15,6 +15,8 @@ namespace sleipnir::autodiff {
 
 enum class ExpressionType { kNone, kConstant, kLinear, kQuadratic, kNonlinear };
 
+enum class OperatorType { kNone, kLinear, kNonlinear };
+
 /**
  * An autodiff expression node.
  */
@@ -51,21 +53,15 @@ struct SLEIPNIR_DLLEXPORT Expression {
   /// This is -1 if the expression isn't in wrt.
   int row = -1;
 
-  /// The expression's creation order. The value assigned here is from a
-  /// monotonically increasing counter that increments every time an Expression
-  /// is constructed. This is used for sorting a flattened representation of the
-  /// expression tree in autodiff Jacobian or Hessian.
-  size_t id;
-
   /// The adjoint of the expression node used during gradient expression tree
   /// generation.
   sleipnir::IntrusiveSharedPtr<Expression> adjointExpr;
 
   /// Expression argument type.
-  ExpressionType type = sleipnir::autodiff::ExpressionType::kLinear;
+  ExpressionType expressionType = sleipnir::autodiff::ExpressionType::kLinear;
 
-  /// If the operator is linear, e.g. given a linear input produces a linear output.
-  bool isLinearOperator;
+  /// Expression argument type.
+  OperatorType operatorType = sleipnir::autodiff::OperatorType::kLinear;
 
   /// Either nullary operator with no arguments, unary operator with one
   /// argument, or binary operator with two arguments. This operator is
@@ -144,15 +140,15 @@ struct SLEIPNIR_DLLEXPORT Expression {
   /**
    * Constructs an unary expression (an operator with one argument).
    *
-   * @param type The expression's type.
-   * @param isLinearOperator If operator is linear.
+   * @param expressionType The expression's type.
+   * @param operatorType The operator's type.
    * @param valueFunc Unary operator that produces this expression's value.
    * @param lhsGradientValueFunc Gradient with respect to the operand.
    * @param lhsGradientFunc Gradient with respect to the operand.
    * @param lhs Unary operator's operand.
    */
-  Expression(ExpressionType type, 
-             bool isLinearOperator,
+  Expression(ExpressionType expressionType, 
+             OperatorType operatorType,
              BinaryFuncDouble valueFunc,
              TrinaryFuncDouble lhsGradientValueFunc,
              TrinaryFuncExpr lhsGradientFunc,
@@ -161,8 +157,8 @@ struct SLEIPNIR_DLLEXPORT Expression {
   /**
    * Constructs a binary expression (an operator with two arguments).
    *
-   * @param type The expression's type.
-   * @param isLinearOperator If operator is linear.
+   * @param expressionType The expression's type.
+   * @param operatorType The operator's type.
    * @param valueFunc Unary operator that produces this expression's value.
    * @param lhsGradientValueFunc Gradient with respect to the left operand.
    * @param rhsGradientValueFunc Gradient with respect to the right operand.
@@ -171,8 +167,8 @@ struct SLEIPNIR_DLLEXPORT Expression {
    * @param lhs Binary operator's left operand.
    * @param rhs Binary operator's right operand.
    */
-  Expression(ExpressionType type, 
-             bool isLinearOperator,
+  Expression(ExpressionType expressionType, 
+             OperatorType operatorType,
              BinaryFuncDouble valueFunc,
              TrinaryFuncDouble lhsGradientValueFunc,
              TrinaryFuncDouble rhsGradientValueFunc,

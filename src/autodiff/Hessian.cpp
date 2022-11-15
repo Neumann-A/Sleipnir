@@ -30,7 +30,6 @@ VectorXvar Hessian::GenerateGradientTree(Variable& variable,
 
   // BFS
   std::vector<Expression*> row;
-  row.reserve(variable.expr->id);
   std::vector<Expression*> stack;
 
   stack.emplace_back(variable.expr.Get());
@@ -44,7 +43,7 @@ VectorXvar Hessian::GenerateGradientTree(Variable& variable,
     for (auto&& arg : currentNode->args) {
       // Only continue if the node is not a constant and hasn't already been
       // explored.
-      if (arg != nullptr && arg->type != ExpressionType::kConstant) {
+      if (arg != nullptr && arg->expressionType != ExpressionType::kConstant) {
         // If this is the first instance of the node encountered (it hasn't been
         // explored yet), add it to stack so it's recursed upon
         if (arg->duplications == 0) {
@@ -68,7 +67,7 @@ VectorXvar Hessian::GenerateGradientTree(Variable& variable,
     for (auto&& arg : currentNode->args) {
       // Only add node if it's not a constant and doesn't already exist in the
       // tape.
-      if (arg != nullptr && arg->type != ExpressionType::kConstant) {
+      if (arg != nullptr && arg->expressionType != ExpressionType::kConstant) {
         // Once the number of node visitations equals the number of duplications
         // (the counter hits zero), add it to the stack. Note that this means
         // the node is only enqueued once.
