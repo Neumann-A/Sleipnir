@@ -70,6 +70,18 @@ ExpressionGraph::ExpressionGraph(Variable& root) {
       }
     }
   }
+
+  for (size_t index = 0; index < m_adjointList.size(); ++index) {
+    m_adjointList[index]->index = index;
+  }
+
+  for (size_t index = 0; index < m_adjointList.size(); ++index) {
+    auto& node = m_adjointList[index];
+    auto& lhs = node->args[0];
+    auto& rhs = node->args[1];
+    m_lhsList.push_back(lhs != nullptr ? lhs->index : -1);
+    m_rhsList.push_back(rhs != nullptr ? rhs->index : -1);
+  }
 }
 
 void ExpressionGraph::Update() {

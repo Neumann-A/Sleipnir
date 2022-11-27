@@ -55,6 +55,8 @@ struct SLEIPNIR_DLLEXPORT Expression {
   /// This is -1 if the expression isn't in wrt.
   int row = -1;
 
+  int index = -1;
+
   /// The adjoint of the expression node used during gradient expression tree
   /// generation.
   sleipnir::IntrusiveSharedPtr<Expression> adjointExpr;
