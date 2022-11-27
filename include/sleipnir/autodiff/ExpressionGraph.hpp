@@ -63,13 +63,13 @@ class SLEIPNIR_DLLEXPORT ExpressionGraph {
       int rhsIndex = m_rhsList[col];
       if (lhsIndex != -1) {
         adjoints[lhsIndex] +=
-          node->gradientValueFuncs[0](lhs->value, rhs->value, adjoints[col]);
+            node->gradientValueFuncs[0](lhs->value, rhs->value, adjoints[col]);
         if (rhsIndex != -1) {
-          adjoints[rhsIndex] +=
-            node->gradientValueFuncs[1](lhs->value, rhs->value, adjoints[col]);
+          adjoints[rhsIndex] += node->gradientValueFuncs[1](
+              lhs->value, rhs->value, adjoints[col]);
         }
       }
-      
+
       // If variable is a leaf node, assign its adjoint to the gradient.
       int row = m_rowList[col];
       if (row != -1) {
