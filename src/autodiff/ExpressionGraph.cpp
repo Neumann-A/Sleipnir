@@ -97,10 +97,10 @@ VectorXvar ExpressionGraph::GenerateGradientTree(Eigen::Ref<VectorXvar> wrt) {
   grad.fill(Variable{});
 
   // Zero adjoints. The root node's adjoint is 1.0 as df/df is always 1.
-  m_adjointList[0]->adjointExpr = MakeConstant(1.0);
+  m_adjointList[0]->adjointExpr = OneExpr();
   for (auto it = m_adjointList.begin() + 1; it != m_adjointList.end(); ++it) {
     auto& node = *it;
-    node->adjointExpr = Zero();
+    node->adjointExpr = ZeroExpr();
   }
 
   // df/dx = (df/dy)(dy/dx). The adjoint of x is equal to the adjoint of y
@@ -108,15 +108,19 @@ VectorXvar ExpressionGraph::GenerateGradientTree(Eigen::Ref<VectorXvar> wrt) {
   // variable; the variable's adjoint is the sum of each path's adjoint
   // contribution.
   for (auto node : m_adjointList) {
-    auto& lhs = node->args[0];
-    auto& rhs = node->args[1];
+    Variable lhs{node->args[0]};
+    Variable rhs{node->args[1]};
+    Variable nodeAdjoint{node->adjointExpr};
 
-    lhs->adjointExpr += node->gradientFuncs[0](lhs, rhs, node->adjointExpr);
-    rhs->adjointExpr += node->gradientFuncs[1](lhs, rhs, node->adjointExpr);
+    Variable lhsAdjoint{lhs.expr->adjointExpr};
+    lhsAdjoint += node->gradientFuncs[0](lhs, rhs, nodeAdjoint);
+
+    Variable rhsAdjoint{rhs.expr->adjointExpr};
+    rhsAdjoint += node->gradientFuncs[1](lhs, rhs, nodeAdjoint);
 
     // If variable is a leaf node, assign its adjoint to the gradient.
     if (node->row != -1) {
-      grad(node->row) = Variable{node->adjointExpr};
+      grad(node->row) = nodeAdjoint;
     }
   }
 

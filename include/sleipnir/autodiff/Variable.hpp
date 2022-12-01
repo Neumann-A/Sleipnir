@@ -11,14 +11,17 @@
 
 namespace sleipnir {
 
+class SLEIPNIR_DLLEXPORT Variable;
+
+SLEIPNIR_DLLEXPORT Variable& Zero();
+
+SLEIPNIR_DLLEXPORT Variable& One();
+
 /**
  * An autodiff variable pointing to an expression node.
  */
 class SLEIPNIR_DLLEXPORT Variable {
  public:
-  /// The expression node.
-  IntrusiveSharedPtr<Expression> expr = Zero();
-
   /**
    * Constructs an uninitialized Variable.
    */
@@ -265,10 +268,35 @@ class SLEIPNIR_DLLEXPORT Variable {
    * variables.
    */
   void Update();
+
+  /**
+   * Returns true if the variable is set to zero.
+   */
+  bool IsZero() const;
+
+  /**
+   * Returns true if the variable is set to one.
+   */
+  bool IsOne() const;
+
+ private:
+  /// The expression node.
+  IntrusiveSharedPtr<Expression> expr = ZeroExpr();
+
+  friend struct Expression;
+  friend class SLEIPNIR_DLLEXPORT ExpressionGraph;
+  friend class SLEIPNIR_DLLEXPORT Jacobian;
 };
 
 using VectorXvar = Eigen::Vector<Variable, Eigen::Dynamic>;
 using MapVectorXvar = Eigen::Map<VectorXvar>;
+
+/**
+ * Creates a constant expression.
+ *
+ * @param x The constant.
+ */
+SLEIPNIR_DLLEXPORT Variable MakeConstant(double x);
 
 /**
  * std::abs() for Variables.
