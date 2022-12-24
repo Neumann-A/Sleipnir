@@ -9,10 +9,24 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <iostream>
 
 #include <Eigen/SparseCore>
 #include <fmt/core.h>
 
+#include "Eigen/src/Cholesky/LDLT.h"
+#include "Eigen/SparseQR"
+#include "Eigen/LU"
+#include "Eigen/Sparse"
+#include "Eigen/SparseCholesky"
+#include "Eigen/Core"
+#include "Eigen/SparseLU"
+#include "Eigen/SparseCore"
+#include "Eigen/src/Core/util/Constants.h"
+#include "Eigen/src/IterativeLinearSolvers/BasicPreconditioners.h"
+#include "Eigen/src/OrderingMethods/Ordering.h"
+#include "Eigen/src/SparseCholesky/SimplicialCholesky.h"
+#include "Eigen/src/SparseCore/SparseMatrix.h"
 #include "RegularizedLDLT.hpp"
 #include "ScopeExit.hpp"
 #include "sleipnir/autodiff/Expression.hpp"
@@ -64,21 +78,21 @@ void SetAD(Eigen::Ref<VectorXvar> dest,
  * @param tau Fraction-to-the-boundary rule scaling factor.
  * @return Fraction of the iterate step size within (0, 1].
  */
-double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& x,
-                                 const Eigen::Ref<const Eigen::VectorXd>& p,
-                                 double tau) {
-  // αᵐᵃˣ = max(α ∈ (0, 1] : x + αp ≥ (1−τ)x)
-  double alpha = 1;
-  for (int i = 0; i < x.rows(); ++i) {
-    if (p(i) != 0.0) {
-      while (alpha * p(i) < -tau * x(i)) {
-        alpha *= 0.999;
-      }
-    }
-  }
+// double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& x,
+//                                  const Eigen::Ref<const Eigen::VectorXd>& p,
+//                                  double tau) {
+//   // αᵐᵃˣ = max(α ∈ (0, 1] : x + αp ≥ (1−τ)x)
+//   double alpha = 1;
+//   for (int i = 0; i < x.rows(); ++i) {
+//     if (p(i) != 0.0) {
+//       while (alpha * p(i) < -tau * x(i)) {
+//         alpha *= 0.999;
+//       }
+//     }
+//   }
 
-  return alpha;
-}
+//   return alpha;
+// }
 
 /**
  * Adds a sparse matrix to the list of triplets with the given row and column
@@ -271,137 +285,102 @@ SolverStatus OptimizationProblem::Solve(const SolverConfig& config) {
   return status;
 }
 
+/**
+ * @brief Computes the positive root of the quadratic problem.
+ * 
+ * @param A 
+ * @param B 
+ * @param C 
+ * @return positive root 
+ */
+double QuadraticFormula(double A, double B, double C) {
+  return (-B + std::sqrt(B * B - 4 * A * C)) / (2 * A);
+}
+
+/**
+ * Applies the projected conjugate gradient method.
+ *
+ * @param initialX The initial step.
+ * @param G Left-hand side of the system.
+ * @param c Right-hand side of the system.
+ * @param A Left-hand side of equality constraints Ax = b
+ * @param preconditioner Preconditioner of the CG method.
+ * @param delta The trust region size.
+ */
+Eigen::VectorXd ProjectedCG(
+        const Eigen::VectorXd& initialX,
+        const Eigen::SparseMatrix<double>& G,
+        const Eigen::VectorXd& c,
+        const Eigen::SparseMatrix<double>& A,
+        const Eigen::SparseMatrix<double>& preconditioner,
+        double delta) {
+
+  std::cout << "Cost \t Constraint Violation" << std::endl;
+
+  // [G  Aᵀ]
+  // [A  0 ]
+  std::vector<Eigen::Triplet<double>> triplets;
+  AssignSparseBlock(triplets, 0, 0, preconditioner);
+  AssignSparseBlock(triplets, preconditioner.rows(), 0, A);
+  AssignSparseBlock(triplets, 0, preconditioner.cols(), A, true);
+  Eigen::SparseMatrix<double> augmentedSystem{G.rows() + A.rows(),
+                                              G.cols() + A.cols()};
+  augmentedSystem.setFromTriplets(triplets.begin(), triplets.end());
+  Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> augmentedSystemSolver{augmentedSystem};
+
+  Eigen::VectorXd x = initialX;
+  Eigen::VectorXd r = G * x + c;
+
+  // [r⁺]
+  // [0 ]
+  Eigen::VectorXd augmentedSystemRhs = Eigen::VectorXd::Zero(augmentedSystem.rows());
+  augmentedSystemRhs.topRows(r.rows()) = r;
+
+  // [H  Aᵀ][g⁺] = [r⁺]
+  // [A  0 ][v⁺]   [0 ]
+  Eigen::VectorXd g = augmentedSystemSolver.solve(augmentedSystemRhs).segment(0, r.rows());
+
+  Eigen::VectorXd d = -g;
+
+  double absNew = r.transpose().dot(g);
+
+  for (int i = 0; i < 2 * A.cols() && g.norm() > 1e-6; ++i) {
+    std::cout << (G * x - c).norm() << "\t" << (A * x).norm() << std::endl;
+
+    double tmp = d.transpose().dot(G * d);
+    // If solver encounters negative curvature or exceeds trust region, exit.
+    if (tmp <= 0.0 || (x + absNew / tmp * d).norm() >= delta) {
+      if (tmp <= 0.0) {
+        std::cout << "negative curvature exit" << std::endl;
+      } else {
+        std::cout << "exceed trust region" << std::endl;
+      }
+      double d_tau =
+              QuadraticFormula(d.transpose().dot(d), 2.0 * d.transpose().dot(x),
+                                x.transpose().dot(x) - delta * delta);
+
+      x += d_tau * d;
+      break;
+    }
+    double alpha = absNew / tmp;
+    x += alpha * d;
+    r += alpha * G * d;
+
+    augmentedSystemRhs.topRows(r.rows()) = r;
+    g = augmentedSystemSolver.solve(augmentedSystemRhs).segment(0, r.rows());
+
+    double absOld = absNew;
+    absNew = r.transpose().dot(g);
+    double beta = absNew / absOld;
+    d = -g + beta * d;
+  }
+
+  return x;
+}
+
 Eigen::VectorXd OptimizationProblem::InteriorPoint(
     const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
     SolverStatus* status) {
-  // Let f(x)ₖ be the cost function, cₑ(x)ₖ be the equality constraints, and
-  // cᵢ(x)ₖ be the inequality constraints. The Lagrangian of the optimization
-  // problem is
-  //
-  //   L(x, s, y, z)ₖ = f(x)ₖ − yₖᵀcₑ(x)ₖ − zₖᵀ(cᵢ(x)ₖ − sₖ)
-  //
-  // The Hessian of the Lagrangian is
-  //
-  //   H(x)ₖ = ∇²ₓₓL(x, s, y, z)ₖ
-  //
-  // The primal-dual barrier term Hessian Σ is defined as
-  //
-  //   Σ = S⁻¹Z
-  //
-  // where
-  //
-  //       [s₁ 0 ⋯ 0 ]
-  //   S = [0  ⋱   ⋮ ]
-  //       [⋮    ⋱ 0 ]
-  //       [0  ⋯ 0 sₘ]
-  //
-  //       [z₁ 0 ⋯ 0 ]
-  //   Z = [0  ⋱   ⋮ ]
-  //       [⋮    ⋱ 0 ]
-  //       [0  ⋯ 0 zₘ]
-  //
-  // and where m is the number of inequality constraints.
-  //
-  // Let f(x) = f(x)ₖ, H = H(x)ₖ, Aₑ = Aₑ(x)ₖ, and Aᵢ = Aᵢ(x)ₖ for clarity. We
-  // want to solve the following Newton-KKT system shown in equation (19.12) of
-  // [1].
-  //
-  //   [H    0  Aₑᵀ  Aᵢᵀ][ pₖˣ]    [∇f(x) − Aₑᵀy − Aᵢᵀz]
-  //   [0    Σ   0   −I ][ pₖˢ] = −[     z − μS⁻¹e     ]
-  //   [Aₑ   0   0    0 ][−pₖʸ]    [        cₑ         ]
-  //   [Aᵢ  −I   0    0 ][−pₖᶻ]    [      cᵢ − s       ]
-  //
-  // where e is a column vector of ones with a number of rows equal to the
-  // number of inequality constraints.
-  //
-  // Solve the second row for pₖˢ.
-  //
-  //   Σpₖˢ + pₖᶻ = μS⁻¹e − z
-  //   Σpₖˢ = μS⁻¹e − z − pₖᶻ
-  //   pₖˢ = μΣ⁻¹S⁻¹e − Σ⁻¹z − Σ⁻¹pₖᶻ
-  //
-  // Substitute Σ = S⁻¹Z into the first two terms.
-  //
-  //   pₖˢ = μ(S⁻¹Z)⁻¹S⁻¹e − (S⁻¹Z)⁻¹z − Σ⁻¹pₖᶻ
-  //   pₖˢ = μZ⁻¹SS⁻¹e − Z⁻¹Sz − Σ⁻¹pₖᶻ
-  //   pₖˢ = μZ⁻¹e − s − Σ⁻¹pₖᶻ
-  //
-  // Substitute the explicit formula for pₖˢ into the fourth row and simplify.
-  //
-  //   Aᵢpₖˣ − pₖˢ = s − cᵢ
-  //   Aᵢpₖˣ − (μZ⁻¹e − s − Σ⁻¹pₖᶻ) = s − cᵢ
-  //   Aᵢpₖˣ − μZ⁻¹e + s + Σ⁻¹pₖᶻ = s − cᵢ
-  //   Aᵢpₖˣ + Σ⁻¹pₖᶻ = −cᵢ + μZ⁻¹e
-  //
-  // Substitute the new second and fourth rows into the system.
-  //
-  //   [H   0  Aₑᵀ  Aᵢᵀ ][ pₖˣ]    [∇f(x) − Aₑᵀy − Aᵢᵀz]
-  //   [0   I   0    0  ][ pₖˢ] = −[−μZ⁻¹e + s + Σ⁻¹pₖᶻ]
-  //   [Aₑ  0   0    0  ][−pₖʸ]    [        cₑ         ]
-  //   [Aᵢ  0   0   −Σ⁻¹][−pₖᶻ]    [     cᵢ − μZ⁻¹e    ]
-  //
-  // Eliminate the second row and column.
-  //
-  //   [H   Aₑᵀ   Aᵢ ][ pₖˣ]    [∇f(x) − Aₑᵀy − Aᵢᵀz]
-  //   [Aₑ   0    0  ][−pₖʸ] = −[        cₑ         ]
-  //   [Aᵢ   0   −Σ⁻¹][−pₖᶻ]    [    cᵢ − μZ⁻¹e     ]
-  //
-  // Solve the third row for pₖᶻ.
-  //
-  //   Aₑpₖˣ + Σ⁻¹pₖᶻ = −cᵢ + μZ⁻¹e
-  //   pₖᶻ = −Σcᵢ + μS⁻¹e − ΣAᵢpₖˣ
-  //
-  // Substitute the explicit formula for pₖᶻ into the first row.
-  //
-  //   Hpₖˣ − Aₑᵀpₖʸ − Aᵢᵀpₖᶻ = −∇f(x) + Aₑᵀy + Aᵢᵀz
-  //   Hpₖˣ − Aₑᵀpₖʸ − Aᵢᵀ(−Σcᵢ + μS⁻¹e − ΣAᵢpₖˣ) = −∇f(x) + Aₑᵀy + Aᵢᵀz
-  //
-  // Expand and simplify.
-  //
-  //   Hpₖˣ − Aₑᵀpₖʸ + AᵢᵀΣcᵢ − AᵢᵀμS⁻¹e + AᵢᵀΣAᵢpₖˣ = −∇f(x) + Aₑᵀy + Aᵢᵀz
-  //   Hpₖˣ + AᵢᵀΣAᵢpₖˣ − Aₑᵀpₖʸ  = −∇f(x) + Aₑᵀy + AᵢᵀΣcᵢ + AᵢᵀμS⁻¹e + Aᵢᵀz
-  //   (H + AᵢᵀΣAᵢ)pₖˣ − Aₑᵀpₖʸ = −∇f(x) + Aₑᵀy − Aᵢᵀ(Σcᵢ − μS⁻¹e − z)
-  //   (H + AᵢᵀΣAᵢ)pₖˣ − Aₑᵀpₖʸ = −(∇f(x) − Aₑᵀy + Aᵢᵀ(Σcᵢ − μS⁻¹e − z))
-  //
-  // Substitute the new first and third rows into the system.
-  //
-  //   [H + AᵢᵀΣAᵢ   Aₑᵀ  0][ pₖˣ]    [∇f(x) − Aₑᵀy + Aᵢᵀ(Σcᵢ − μS⁻¹e − z)]
-  //   [    Aₑ        0   0][−pₖʸ] = −[                cₑ                 ]
-  //   [    0         0   I][−pₖᶻ]    [       −Σcᵢ + μS⁻¹e − ΣAᵢpₖˣ       ]
-  //
-  // Eliminate the third row and column.
-  //
-  //   [H + AᵢᵀΣAᵢ  Aₑᵀ][ pₖˣ] = −[∇f(x) − Aₑᵀy + Aᵢᵀ(Σcᵢ − μS⁻¹e − z)]
-  //   [    Aₑ       0 ][−pₖʸ]    [                cₑ                 ]
-  //
-  // This reduced 2x2 block system gives the iterates pₖˣ and pₖʸ with the
-  // iterates pₖᶻ and pₖˢ given by
-  //
-  //   pₖᶻ = −Σcᵢ + μS⁻¹e − ΣAᵢpₖˣ
-  //   pₖˢ = μZ⁻¹e − s − Σ⁻¹pₖᶻ
-  //
-  // The iterates are applied like so
-  //
-  //   xₖ₊₁ = xₖ + αₖᵐᵃˣpₖˣ
-  //   sₖ₊₁ = xₖ + αₖᵐᵃˣpₖˢ
-  //   yₖ₊₁ = xₖ + αₖᶻpₖʸ
-  //   zₖ₊₁ = xₖ + αₖᶻpₖᶻ
-  //
-  // where αₖᵐᵃˣ and αₖᶻ are computed via the fraction-to-the-boundary rule
-  // shown in equations (15a) and (15b) of [2].
-  //
-  //   αₖᵐᵃˣ = max(α ∈ (0, 1] : sₖ + αpₖˢ ≥ (1−τⱼ)sₖ)
-  //   αₖᶻ = max(α ∈ (0, 1] : zₖ + αpₖᶻ ≥ (1−τⱼ)zₖ)
-  //
-  // [1] Nocedal, J. and Wright, S. "Numerical Optimization", 2nd. ed., Ch. 19.
-  //     Springer, 2006.
-  // [2] Wächter, A. and Biegler, L. "On the implementation of an interior-point
-  //     filter line-search algorithm for large-scale nonlinear programming",
-  //     2005. http://cepac.cheme.cmu.edu/pasilectures/biegler/ipopt.pdf
-  // [3] Byrd, R. and Nocedal J. and Waltz R. "KNITRO: An Integrated Package for
-  //     Nonlinear Optimization", 2005.
-  //     https://users.iems.northwestern.edu/~nocedal/PDFfiles/integrated.pdf
-
   auto solveStartTime = std::chrono::system_clock::now();
 
   if (m_config.diagnostics) {
@@ -416,10 +395,10 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
   // Barrier parameter scale factor κ_Σ for inequality constraint Lagrange
   // multiplier safeguard
-  constexpr double kappa_sigma = 1e10;
+  // constexpr double kappa_sigma = 1e10;
 
   // Fraction-to-the-boundary rule scale factor minimum
-  constexpr double tau_min = 0.99;
+  // constexpr double tau_min = 0.99;
 
   // Barrier parameter linear decrease power in "κ_μ μ". Range of (0, 1).
   constexpr double kappa_mu = 0.2;
@@ -432,7 +411,12 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   double old_mu = mu;
 
   // Fraction-to-the-boundary rule scale factor τ
-  double tau = tau_min;
+  // double tau = tau_min;
+
+  // Trust region size delta
+  double delta = 10;
+
+  Eigen::VectorXd p;
 
   std::vector<Eigen::Triplet<double>> triplets;
 
@@ -507,6 +491,8 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   //         [    ⋮    ]
   //         [∇ᵀcᵢₘ(x)ₖ]
   Eigen::SparseMatrix<double> A_i = jacobianCi.Calculate();
+
+  Eigen::SparseMatrix<double> penaltyMatrix = 1e-15 * Eigen::MatrixXd::Identity(x.rows() + c_i.rows(), x.rows() + c_i.rows()).sparseView();
 
   auto iterationsStartTime = std::chrono::system_clock::now();
 
@@ -589,12 +575,9 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     }
   }};
 
-  RegularizedLDLT solver{theta_mu};
-
   while (E_mu > m_config.tolerance) {
     while (true) {
       auto innerIterStartTime = std::chrono::system_clock::now();
-
       //     [s₁ 0 ⋯ 0 ]
       // S = [0  ⋱   ⋮ ]
       //     [⋮    ⋱ 0 ]
@@ -618,6 +601,15 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       //         [∇ᵀcᵢₘ(x)ₖ]
       A_i = jacobianCi.Calculate();
 
+      // A = [Aₑ   0]
+      //     [Aᵢ  -S]
+      triplets.clear();
+      AssignSparseBlock(triplets, 0, 0, A_e);
+      AssignSparseBlock(triplets, A_e.rows(), 0, A_i);
+      AssignSparseBlock(triplets, A_e.rows(), A_i.cols(), -S);
+      Eigen::SparseMatrix<double> A{A_e.rows() + A_i.rows(), A_i.cols() + S.cols()};
+      A.setFromTriplets(triplets.begin(), triplets.end());
+
       // Update cₑ and cᵢ
       for (size_t row = 0; row < m_equalityConstraints.size(); row++) {
         c_e(row) = m_equalityConstraints[row].Value();
@@ -625,6 +617,75 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       for (size_t row = 0; row < m_inequalityConstraints.size(); row++) {
         c_i(row) = m_inequalityConstraints[row].Value();
       }
+
+      // c = [  cₑ  ]
+      //     [cᵢ - s]
+      Eigen::VectorXd c{c_e.rows() + c_i.rows()};
+      c.topRows(c_e.rows()) = c_e;
+      c.bottomRows(c_i.rows()) = c_i - s;
+
+      // LDLᵀ factorization of AᵀA. A penalty formulation is used to ensure the existance of a solution.
+      // TODO: implement exact minimum norm solver; the penalty formulation is fast and works well, but could lose accuracy.
+      Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ATAsolver{penaltyMatrix + A.transpose() * A};
+
+      // Gradient of f ∇f
+      g = gradientF.Calculate();
+
+      // S⁻¹
+      Eigen::SparseMatrix<double> inverseS = S.cwiseInverse();
+
+      // [ ∇f]
+      // [-µe]
+      Eigen::VectorXd phi{H.rows() + S.rows()};
+      phi.topRows(g.rows()) = g;
+      phi.bottomRows(e.rows()) = -mu * e;
+
+      // Compute lagrange multipliers from least squares estimate.
+      //
+      // AᵀA[y] = A[ ∇f]
+      //    [z]    [-µe]
+      Eigen::VectorXd multipliers = ATAsolver.solve(A * phi);
+      y = multipliers.topRows(y.rows());
+      z = multipliers.bottomRows(z.rows());
+      for (int i = 0; i < z.rows(); ++i) {
+        if (z(i) <= 0) {
+          z(i) = std::min(1e-3, mu / s(i));
+        }
+      }
+      SetAD(yAD, y);
+      SetAD(zAD, z);
+      graphL.Update();
+
+      //     [z₁ 0 ⋯ 0 ]
+      // Z = [0  ⋱   ⋮ ]
+      //     [⋮    ⋱ 0 ]
+      //     [0  ⋯ 0 zₘ]
+      triplets.clear();
+      for (int k = 0; k < s.rows(); k++) {
+        triplets.emplace_back(k, k, z[k]);
+      }
+      Eigen::SparseMatrix<double> Z{z.rows(), z.rows()};
+      Z.setFromTriplets(triplets.begin(), triplets.end());
+
+      // Z⁻¹
+      Eigen::SparseMatrix<double> inverseZ = Z.cwiseInverse();
+
+      // Σ = S⁻¹Z
+      Eigen::SparseMatrix<double> sigma = inverseS * Z;
+
+      // Σ⁻¹ = SZ⁻¹
+      Eigen::SparseMatrix<double> inverseSigma = S * inverseZ;
+
+      // [H  0 ] 
+      // [0 SΣS]
+      triplets.begin();
+      AssignSparseBlock(triplets, 0, 0, H);
+      AssignSparseBlock(triplets, H.rows(), H.cols(), S * sigma * S);
+      Eigen::SparseMatrix<double> W{H.rows() + S.rows(), H.cols() + S.cols()};
+      W.setFromTriplets(triplets.begin(), triplets.end());
+
+      // Hₖ = ∇²ₓₓL(x, s, y, z)ₖ
+      H = hessianL.Calculate();
 
       // Check for problem local infeasibility. The problem is locally
       // infeasible if
@@ -726,115 +787,52 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         break;
       }
 
-      // S⁻¹
-      Eigen::SparseMatrix<double> inverseS = S.cwiseInverse();
-
-      //     [z₁ 0 ⋯ 0 ]
-      // Z = [0  ⋱   ⋮ ]
-      //     [⋮    ⋱ 0 ]
-      //     [0  ⋯ 0 zₘ]
-      triplets.clear();
-      for (int k = 0; k < s.rows(); k++) {
-        triplets.emplace_back(k, k, z[k]);
+      // Compute minimum norm solution of Ap_b + c = 0.
+      Eigen::VectorXd p_b = ATAsolver.solve(-A.transpose() * c);
+      
+      // Dogleg method https://en.wikipedia.org/wiki/Powell%27s_dog_leg_method
+      if (p_b.norm() <= delta) {
+        p = p_b;
+      } else {
+        Eigen::VectorXd d_p = -A.transpose() * c;
+        Eigen::VectorXd p_u = d_p * (d_p.squaredNorm() / (A * d_p).squaredNorm());
+        if (p_u.norm() > delta) {
+          p = delta * d_p / d_p.norm();
+        } else {
+          double dogleg_tau = QuadraticFormula((p_b - p_u).squaredNorm(), 
+                                                2 * p_u.dot(p_b - p_u), 
+                                                p_u.squaredNorm() - delta * delta);
+          p = p_u + dogleg_tau * (p_b - p_u);
+        }
       }
-      Eigen::SparseMatrix<double> Z{z.rows(), z.rows()};
-      Z.setFromTriplets(triplets.begin(), triplets.end());
 
-      // Z⁻¹
-      Eigen::SparseMatrix<double> inverseZ = Z.cwiseInverse();
+      step = ProjectedCG(p, 
+                         W, 
+                         -phi, 
+                         A, 
+                         1e3 * Eigen::MatrixXd::Identity(A.cols(), A.cols()).sparseView(), 
+                         delta);
 
-      // Σ = S⁻¹Z
-      Eigen::SparseMatrix<double> sigma = inverseS * Z;
+      // // αₖᵐᵃˣ = max(α ∈ (0, 1] : sₖ + αpₖˢ ≥ (1−τⱼ)sₖ)
+      // double alpha_max = FractionToTheBoundaryRule(s, p_s, tau);
 
-      // Σ⁻¹ = SZ⁻¹
-      Eigen::SparseMatrix<double> inverseSigma = S * inverseZ;
-
-      // Hₖ = ∇²ₓₓL(x, s, y, z)ₖ
-      H = hessianL.Calculate();
-
-      // lhs = [H + AᵢᵀΣAᵢ  Aₑᵀ]
-      //       [    Aₑ       0 ]
-      triplets.clear();
-      Eigen::SparseMatrix<double> tmp = H;
-      if (m_inequalityConstraints.size() > 0) {
-        tmp += A_i.transpose() * sigma * A_i;
-      }
-      // Assign top-left quadrant
-      AssignSparseBlock(triplets, 0, 0, tmp);
-      if (m_equalityConstraints.size() > 0) {
-        // Assign bottom-left quadrant
-        AssignSparseBlock(triplets, tmp.rows(), 0, A_e);
-
-        // Assign top-right quadrant
-        AssignSparseBlock(triplets, 0, tmp.rows(), A_e, true);
-      }
-      Eigen::SparseMatrix<double> lhs{H.rows() + A_e.rows(),
-                                      H.cols() + A_e.rows()};
-      lhs.setFromTriplets(triplets.begin(), triplets.end());
-
-      g = gradientF.Calculate();
-
-      // rhs = −[∇f − Aₑᵀy + Aᵢᵀ(Σcᵢ − μS⁻¹e − z)]
-      //        [               cₑ               ]
-      //
-      // The outer negative sign is applied in the solve() call.
-      Eigen::VectorXd rhs{x.rows() + y.rows()};
-      rhs.topRows(x.rows()) = g;
-      if (m_equalityConstraints.size() > 0) {
-        rhs.topRows(x.rows()) -= A_e.transpose() * y;
-      }
-      if (m_inequalityConstraints.size() > 0) {
-        rhs.topRows(x.rows()) +=
-            A_i.transpose() * (sigma * c_i - mu * inverseS * e - z);
-      }
-      rhs.bottomRows(y.rows()) = c_e;
-
-      // Solve the Newton-KKT system
-      step = solver.Solve(lhs, -rhs, m_equalityConstraints.size(), mu);
-
-      // step = [ pₖˣ]
-      //        [−pₖʸ]
-      Eigen::VectorXd p_x = step.segment(0, x.rows());
-      Eigen::VectorXd p_y = -step.segment(x.rows(), y.rows());
-
-      // pₖᶻ = −Σcᵢ + μS⁻¹e − ΣAᵢpₖˣ
-      Eigen::VectorXd p_z =
-          -sigma * c_i + mu * inverseS * e - sigma * A_i * p_x;
-
-      // pₖˢ = μZ⁻¹e − s − Σ⁻¹pₖᶻ
-      Eigen::VectorXd p_s = mu * inverseZ * e - s - inverseSigma * p_z;
-
-      // αₖᵐᵃˣ = max(α ∈ (0, 1] : sₖ + αpₖˢ ≥ (1−τⱼ)sₖ)
-      double alpha_max = FractionToTheBoundaryRule(s, p_s, tau);
-
-      // αₖᶻ = max(α ∈ (0, 1] : zₖ + αpₖᶻ ≥ (1−τⱼ)zₖ)
-      double alpha_z = FractionToTheBoundaryRule(z, p_z, tau);
+      // // αₖᶻ = max(α ∈ (0, 1] : zₖ + αpₖᶻ ≥ (1−τⱼ)zₖ)
+      // double alpha_z = FractionToTheBoundaryRule(z, p_z, tau);
 
       // xₖ₊₁ = xₖ + αₖᵐᵃˣpₖˣ
       // sₖ₊₁ = xₖ + αₖᵐᵃˣpₖˢ
       // yₖ₊₁ = xₖ + αₖᶻpₖʸ
       // zₖ₊₁ = xₖ + αₖᶻpₖᶻ
-      x += alpha_max * p_x;
-      s += alpha_max * p_s;
-      y += alpha_z * p_y;
-      z += alpha_z * p_z;
+      // x += alpha_max * p_x;
+      // s += alpha_max * p_s;
+      // y += alpha_z * p_y;
+      // z += alpha_z * p_z;
 
-      // A requirement for the convergence proof is that the "primal-dual
-      // barrier term Hessian" Σₖ does not deviate arbitrarily much from the
-      // "primal Hessian" μⱼSₖ⁻². We ensure this by resetting
-      //
-      //   zₖ₊₁⁽ⁱ⁾ = max(min(zₖ₊₁⁽ⁱ⁾, κ_Σ μⱼ/sₖ₊₁⁽ⁱ⁾), μⱼ/(κ_Σ sₖ₊₁⁽ⁱ⁾))
-      //
-      // for some fixed κ_Σ ≥ 1 after each step. See equation (16) in [2].
-      for (int row = 0; row < z.rows(); ++row) {
-        z(row) = std::max(std::min(z(row), kappa_sigma * mu / s(row)),
-                          mu / (kappa_sigma * s(row)));
-      }
+      x += step.segment(0, x.rows());
+      s += S * step.segment(x.rows(), s.rows());
 
       SetAD(xAD, x);
       SetAD(sAD, s);
-      SetAD(yAD, y);
-      SetAD(zAD, z);
       graphL.Update();
 
       auto innerIterEndTime = std::chrono::system_clock::now();
@@ -876,7 +874,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     //   τⱼ = max(τₘᵢₙ, 1 − μⱼ)
     //
     // See equation (8) in [2].
-    tau = std::max(tau_min, 1.0 - mu);
+    // tau = std::max(tau_min, 1.0 - mu);
   }
 
   return x;
