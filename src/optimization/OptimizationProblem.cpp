@@ -293,89 +293,135 @@ SolverStatus OptimizationProblem::Solve(const SolverConfig& config) {
  * @param C 
  * @return positive root 
  */
-double QuadraticFormula(double A, double B, double C) {
-  return (-B + std::sqrt(B * B - 4 * A * C)) / (2 * A);
+double QuadraticFormula(double A, double B, double C, double sign) {
+  return (-B + sign * std::sqrt(B * B - 4 * A * C)) / (2 * A);
 }
 
 /**
- * Applies the projected conjugate gradient method.
+ * Computes an approximate solution to the problem:
+ *
+ *        min (1/2)xᵀGx + xᵀc
+ * subject to Ax + b = 0
+ *            |x| < Δ
+ *
+ *        min (1/2)xᵀGx + xᵀc
+ * subject to Ax + b = 0
+ *            |x|² = Δ
+ *
+ *
+ *
  *
  * @param initialX The initial step.
- * @param G Left-hand side of the system.
- * @param c Right-hand side of the system.
- * @param A Left-hand side of equality constraints Ax = b
- * @param preconditioner Preconditioner of the CG method.
+ * @param G
+ * @param c
+ * @param A
+ * @param b
  * @param delta The trust region size.
  */
-Eigen::VectorXd ProjectedCG(
-        const Eigen::VectorXd& initialX,
-        const Eigen::SparseMatrix<double>& G,
-        const Eigen::VectorXd& c,
-        const Eigen::SparseMatrix<double>& A,
-        const Eigen::SparseMatrix<double>& preconditioner,
-        double delta) {
+Eigen::VectorXd ProjectedCG(Eigen::VectorXd initialGuess,
+                            Eigen::SparseMatrix<double> G, 
+                            Eigen::VectorXd c, 
+                            Eigen::SparseMatrix<double> A,
+                            Eigen::VectorXd b,
+                            double delta) {
+    // [B  Aᵀ]
+    // [A  0 ]
+    std::vector<Eigen::Triplet<double>> triplets;
+    // AssignSparseBlock(triplets, 0, 0, G);
+    AssignSparseBlock(triplets, 0, 0, Eigen::MatrixXd::Identity(G.rows(), G.cols()).sparseView());
+    AssignSparseBlock(triplets, G.rows(), 0, A);
+    AssignSparseBlock(triplets, 0, G.cols(), A, true);
+    Eigen::SparseMatrix<double> P{G.rows() + A.rows(), G.cols() + A.rows()};
+    P.setFromTriplets(triplets.begin(), triplets.end());
+    Eigen::SparseLU<Eigen::SparseMatrix<double>> solver{P};
 
-  std::cout << "Cost \t Constraint Violation" << std::endl;
+    Eigen::VectorXd x = initialGuess;
+    Eigen::VectorXd r = (G * x + c);
 
-  // [G  Aᵀ]
-  // [A  0 ]
-  std::vector<Eigen::Triplet<double>> triplets;
-  AssignSparseBlock(triplets, 0, 0, preconditioner);
-  AssignSparseBlock(triplets, preconditioner.rows(), 0, A);
-  AssignSparseBlock(triplets, 0, preconditioner.cols(), A, true);
-  Eigen::SparseMatrix<double> augmentedSystem{G.rows() + A.rows(),
-                                              G.cols() + A.cols()};
-  augmentedSystem.setFromTriplets(triplets.begin(), triplets.end());
-  Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> augmentedSystemSolver{augmentedSystem};
+    // [B  Aᵀ][g] = [r]
+    // [A  0 ][v]   [0]
+    Eigen::VectorXd augmentedRhs = Eigen::VectorXd::Zero(P.rows());
+    augmentedRhs.topRows(r.rows()) = r;
+    Eigen::VectorXd g = solver.solve(augmentedRhs).topRows(r.rows());
+    Eigen::VectorXd d = -g;
+    Eigen::VectorXd v;
 
-  Eigen::VectorXd x = initialX;
-  Eigen::VectorXd r = G * x + c;
+    std::cout << "initialized cg" << std::endl;
 
-  // [r⁺]
-  // [0 ]
-  Eigen::VectorXd augmentedSystemRhs = Eigen::VectorXd::Zero(augmentedSystem.rows());
-  augmentedSystemRhs.topRows(r.rows()) = r;
+    // std::cout << "iteration \t\t objective \t\t residual" << std::endl;
+    // std::cout << "    " << 0 << "\t\t\t     " << 0.5 * x.transpose() * G * x + x.transpose() * c << "\t\t\t    " << (A * x).norm() << std::endl;
+    for (int iteration = 0; iteration < 10 * (x.rows() - A.rows()); ++iteration) {
+      double tmp1 = r.dot(g);
+      double tmp2 = d.dot(G * d);
 
-  // [H  Aᵀ][g⁺] = [r⁺]
-  // [A  0 ][v⁺]   [0 ]
-  Eigen::VectorXd g = augmentedSystemSolver.solve(augmentedSystemRhs).segment(0, r.rows());
-
-  Eigen::VectorXd d = -g;
-
-  double absNew = r.transpose().dot(g);
-
-  for (int i = 0; i < 2 * A.cols() && g.norm() > 1e-6; ++i) {
-    std::cout << (G * x - c).norm() << "\t" << (A * x).norm() << std::endl;
-
-    double tmp = d.transpose().dot(G * d);
-    // If solver encounters negative curvature or exceeds trust region, exit.
-    if (tmp <= 0.0 || (x + absNew / tmp * d).norm() >= delta) {
-      if (tmp <= 0.0) {
-        std::cout << "negative curvature exit" << std::endl;
-      } else {
-        std::cout << "exceed trust region" << std::endl;
+      if (tmp2 <= 0) {
+        std::cout << "computing tmp2 violation" << std::endl;
+        Eigen::VectorXd x1 = x + QuadraticFormula(d.squaredNorm(), 2 * x.dot(d), x.squaredNorm() - delta * delta, -1) * d;
+        Eigen::VectorXd x2 = x + QuadraticFormula(d.squaredNorm(), 2 * x.dot(d), x.squaredNorm() - delta * delta, 1) * d;
+        if (0.5 * x1.dot(G * x1) + x1.dot(c) < 0.5 * x2.dot(G * x2) + x2.dot(c)) {
+          return x1;
+        } else {
+          return x2;
+        }
       }
-      double d_tau =
-              QuadraticFormula(d.transpose().dot(d), 2.0 * d.transpose().dot(x),
-                                x.transpose().dot(x) - delta * delta);
 
-      x += d_tau * d;
-      break;
+      double alpha = tmp1 / tmp2;
+
+      if ((x + alpha * d).norm() >= delta) {
+        double A = d.squaredNorm();
+        double B = 2 * x.dot(d);
+        double C = x.squaredNorm() - delta * delta;
+        double tau1 = QuadraticFormula(A, B, C, -1);
+        double tau2 = QuadraticFormula(A, B, C, 1);
+        std::cout << "A: " << A << std::endl;
+        std::cout << "B: " << B << std::endl;
+        std::cout << "C: " << C << std::endl;
+        std::cout << "tau 1: " << tau1 << std::endl;
+        std::cout << "tau 2: " << tau2 << std::endl;
+        Eigen::VectorXd x1 = x + tau1 * d;
+        Eigen::VectorXd x2 = x + tau2 * d;
+        if (0.5 * x1.dot(G * x1) + x1.dot(c) < 0.5 * x2.dot(G * x2) + x2.dot(c)) {
+          return x1;
+        } else {
+          return x2;
+        }
+      }
+
+      x += alpha * d;
+      r += alpha * G * d;
+
+      // [B  Aᵀ][g⁺] = [r⁺]
+      // [A  0 ][v⁺]   [0 ]
+      augmentedRhs.topRows(r.rows()) = r;
+      Eigen::VectorXd augmentedSol = solver.solve(augmentedRhs);
+      g = augmentedSol.topRows(r.rows());
+      v = augmentedSol.bottomRows(A.rows());
+
+      // Iteratively refine step to reduce constraint violation. 
+      //
+      // [B  Aᵀ][Δg⁺] = [p_g]
+      // [A  0 ][Δv⁺]   [p_v]
+      Eigen::VectorXd p_g = r - G * g - A.transpose() * v;
+      Eigen::VectorXd p_v = -A * g;
+      Eigen::VectorXd refinedRhs{P.rows()};
+      refinedRhs.topRows(p_g.rows()) = p_g;
+      refinedRhs.bottomRows(p_v.rows()) = p_v;
+      Eigen::VectorXd refinedSol = solver.solve(refinedRhs);
+      g += refinedSol.topRows(p_g.rows());
+      v += refinedSol.bottomRows(p_v.rows());
+
+      double beta = r.dot(g) / tmp1;
+      // std::cout << "    " << iteration + 1 << "\t\t\t  " << 0.5 * x.dot(G * x) + x.dot(c) << "\t\t    " << (A * x).norm() << std::endl;
+      d = -g + beta * d;
+
+      if (std::abs(r.dot(g)) < 1e-6) {
+        return x;
+      }
+
+      std::cout << "d norm: " << d.norm() << std::endl;
     }
-    double alpha = absNew / tmp;
-    x += alpha * d;
-    r += alpha * G * d;
 
-    augmentedSystemRhs.topRows(r.rows()) = r;
-    g = augmentedSystemSolver.solve(augmentedSystemRhs).segment(0, r.rows());
-
-    double absOld = absNew;
-    absNew = r.transpose().dot(g);
-    double beta = absNew / absOld;
-    d = -g + beta * d;
-  }
-
-  return x;
+    return x;
 }
 
 Eigen::VectorXd OptimizationProblem::InteriorPoint(
@@ -414,7 +460,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // double tau = tau_min;
 
   // Trust region size delta
-  double delta = 10;
+  double delta = 1;
 
   Eigen::VectorXd p;
 
@@ -678,7 +724,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
       // [H  0 ] 
       // [0 SΣS]
-      triplets.begin();
+      triplets.clear();
       AssignSparseBlock(triplets, 0, 0, H);
       AssignSparseBlock(triplets, H.rows(), H.cols(), S * sigma * S);
       Eigen::SparseMatrix<double> W{H.rows() + S.rows(), H.cols() + S.cols()};
@@ -801,17 +847,24 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         } else {
           double dogleg_tau = QuadraticFormula((p_b - p_u).squaredNorm(), 
                                                 2 * p_u.dot(p_b - p_u), 
-                                                p_u.squaredNorm() - delta * delta);
+                                                p_u.squaredNorm() - delta * delta,
+                                                1);
           p = p_u + dogleg_tau * (p_b - p_u);
         }
       }
+
+      std::cout << "computed constraint violation" << std::endl;
 
       step = ProjectedCG(p, 
                          W, 
                          -phi, 
                          A, 
-                         1e3 * Eigen::MatrixXd::Identity(A.cols(), A.cols()).sparseView(), 
+                         Eigen::MatrixXd::Identity(A.cols(), A.cols()).sparseView(), 
                          delta);
+
+      std::cout << "computed projected cg step" << std::endl;
+
+      std::cout << "step norm: " << step.norm() << std::endl;
 
       // // αₖᵐᵃˣ = max(α ∈ (0, 1] : sₖ + αpₖˢ ≥ (1−τⱼ)sₖ)
       // double alpha_max = FractionToTheBoundaryRule(s, p_s, tau);
