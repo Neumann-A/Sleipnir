@@ -59,31 +59,6 @@ void SetAD(Eigen::Ref<VectorXvar> dest,
 }
 
 /**
- * Applies fraction-to-the-boundary rule to a variable and its iterate, then
- * returns a fraction of the iterate step size within (0, 1].
- *
- * @param x The variable.
- * @param p The iterate on the variable.
- * @param tau Fraction-to-the-boundary rule scaling factor.
- * @return Fraction of the iterate step size within (0, 1].
- */
-// double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& x,
-//                                  const Eigen::Ref<const Eigen::VectorXd>& p,
-//                                  double tau) {
-//   // αᵐᵃˣ = max(α ∈ (0, 1] : x + αp ≥ (1−τ)x)
-//   double alpha = 1;
-//   for (int i = 0; i < x.rows(); ++i) {
-//     if (p(i) != 0.0) {
-//       while (alpha * p(i) < -tau * x(i)) {
-//         alpha *= 0.999;
-//       }
-//     }
-//   }
-
-//   return alpha;
-// }
-
-/**
  * Adds a sparse matrix to the list of triplets with the given row and column
  * offset.
  *
@@ -417,13 +392,6 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Barrier parameter scale factor κ_μ for tolerance checks
   constexpr double kappa_epsilon = 10.0;
 
-  // Barrier parameter scale factor κ_Σ for inequality constraint Lagrange
-  // multiplier safeguard
-  // constexpr double kappa_sigma = 1e10;
-
-  // Fraction-to-the-boundary rule scale factor minimum
-  // constexpr double tau_min = 0.99;
-
   // Barrier parameter linear decrease power in "κ_μ μ". Range of (0, 1).
   constexpr double kappa_mu = 0.2;
 
@@ -433,9 +401,6 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Barrier parameter μ
   double mu = 0.1;
   double old_mu = mu;
-
-  // Fraction-to-the-boundary rule scale factor τ
-  // double tau = tau_min;
 
   // Trust region size delta
   double delta = 1;
@@ -884,13 +849,6 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     old_mu = mu;
     mu = std::max(m_config.tolerance / 10.0,
                   std::min(kappa_mu * mu, std::pow(mu, theta_mu)));
-
-    // Update the fraction-to-the-boundary rule scaling factor.
-    //
-    //   τⱼ = max(τₘᵢₙ, 1 − μⱼ)
-    //
-    // See equation (8) in [2].
-    // tau = std::max(tau_min, 1.0 - mu);
   }
 
   return x;
