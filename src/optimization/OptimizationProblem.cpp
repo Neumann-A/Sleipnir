@@ -148,23 +148,27 @@ double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& p,
 Eigen::VectorXd ProjectedCG(Eigen::VectorXd initialGuess,
                             Eigen::SparseMatrix<double> G, Eigen::VectorXd c,
                             Eigen::SparseMatrix<double> A, double delta) {
-  // [B  Aᵀ]
-  // [A  0 ]
+  // P = [G  Aᵀ]
+  //     [A  0 ]
   std::vector<Eigen::Triplet<double>> triplets;
-  // AssignSparseBlock(triplets, 0, 0, G);
-  for (int row = 0; row < G.rows(); ++row) {
-    triplets.emplace_back(row, row, 1.0);
-  }
+  AssignSparseBlock(triplets, 0, 0, G);
   AssignSparseBlock(triplets, G.rows(), 0, A);
   AssignSparseBlock(triplets, 0, G.cols(), A, true);
+
+  // Regularize P so it can't have zero pivots, which crashes SparseLU
+  for (int row = 0; row < G.rows(); ++row) {
+    triplets.emplace_back(row, row, 1e-15);
+  }
+
   Eigen::SparseMatrix<double> P{G.rows() + A.rows(), G.cols() + A.rows()};
   P.setFromTriplets(triplets.begin(), triplets.end());
+
   Eigen::SparseLU<Eigen::SparseMatrix<double>> solver{P};
 
   Eigen::VectorXd x = initialGuess;
-  Eigen::VectorXd r = (G * x + c);
+  Eigen::VectorXd r = G * x + c;
 
-  // [B  Aᵀ][g] = [r]
+  // [G  Aᵀ][g] = [r]
   // [A  0 ][v]   [0]
   Eigen::VectorXd augmentedRhs = Eigen::VectorXd::Zero(P.rows());
   augmentedRhs.topRows(r.rows()) = r;
@@ -212,7 +216,7 @@ Eigen::VectorXd ProjectedCG(Eigen::VectorXd initialGuess,
     x += alpha * d;
     r += alpha * G * d;
 
-    // [B  Aᵀ][g⁺] = [r⁺]
+    // [G  Aᵀ][g⁺] = [r⁺]
     // [A  0 ][v⁺]   [0 ]
     augmentedRhs.topRows(r.rows()) = r;
     Eigen::VectorXd augmentedSol = solver.solve(augmentedRhs);
@@ -221,7 +225,7 @@ Eigen::VectorXd ProjectedCG(Eigen::VectorXd initialGuess,
 
     // Iteratively refine step to reduce constraint violation.
     //
-    // [B  Aᵀ][Δg⁺] = [p_g]
+    // [G  Aᵀ][Δg⁺] = [p_g]
     // [A  0 ][Δv⁺]   [p_v]
     Eigen::VectorXd p_g = r - G * g - A.transpose() * v;
     Eigen::VectorXd p_v = -A * g;
@@ -505,7 +509,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   double tau = tau_min;
 
   // Trust region size delta
-  double delta = 1.0;
+  double delta = 100.0;
 
   Eigen::VectorXd p;
 
