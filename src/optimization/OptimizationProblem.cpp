@@ -396,7 +396,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   //   subject to cₑ(x) = 0
   //              cᵢ(x) - s = 0
   //
-  // Where m is the number of inequality constraints.
+  // Where m is the number of inequality constraints, and μ is the "barrier parameter".
   //
   // Redefine iterate step as
   //
