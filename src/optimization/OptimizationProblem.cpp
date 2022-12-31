@@ -387,59 +387,66 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   //   L(x, s, y, z)ₖ = f(x)ₖ − yₖᵀcₑ(x)ₖ − zₖᵀ(cᵢ(x)ₖ − sₖ)
   //
   // Let H be the Hessian of the Lagrangian.
+  //
+  // The primal formulation takes the form [2]:
   //  
-  //        min f(x) - μΣ(ln(s))
-  // subject to cₑ(x) = 0
-  //            cᵢ(x) - s = 0
+  //                       m
+  //          min f(x) - μ(Σ ln(sᵢ))
+  //                      i=1
+  //   subject to cₑ(x) = 0
+  //              cᵢ(x) - s = 0
+  //
+  // Where m is the number of inequality constraints.
   //
   // Redefine iterate step as
   //
-  // p = [p_x] = [  d_x ]
-  //     [p_s]   [S⁻¹d_s]
+  //   p = [p_x] = [  d_x ]
+  //       [p_s]   [S⁻¹d_s]
   //
   // Constraint value vector
   //
-  // c = [  cₑ  ]
-  //     [cᵢ - s]
+  //   c = [  cₑ  ]
+  //       [cᵢ - s]
   //
   // Constraint Jacobian
   //
-  // A = [Aₑ  0]
-  //     [Aᵢ -S]
+  //   A = [Aₑ  0]
+  //       [Aᵢ -S]
   //
   // Gradient of the objective function with respect to p.
   //
-  // Φ = [ ∇f]
-  //     [-μe]
+  //   Φ = [ ∇f]
+  //       [-μe]
   //
   // Hessian of the objective function with respect to p.
   //
-  // W = [H   0]
-  //     [0  μI]
+  //   W = [H   0]
+  //       [0  μI]
+  //  
+  // Approximate the objective function and constraints as the quadratic programming problem
+  // shown in equation 19.33 of [1].
   //
-  // Approximating the objective function and constraints as a quadratic programming problem.
-  //
-  //        min ½pᵀWp + pᵀΦ             (1a)
-  // subject to Ap + c = r              (1b)
-  //            ||p|| < Δ               (1c)
-  //            pₛ > -(τ/2)e            (1d)
+  //          min ½pᵀWp + pᵀΦ             (1a)
+  //   subject to Ap + c = r              (1b)
+  //              ||p|| < Δ               (1c)
+  //              pₛ > -(τ/2)e            (1d)
   //
   // An inexact solution to the subproblem is computed in two stages. 
   // The residual r is first computed from the subproblem:
   //
-  //        min ||Av + c||             (2a)
-  // subject to ||v|| < 0.8Δ           (2b)
-  //            vₛ > -(τ/2)e           (2c)
-  //s
-  // r = Av + c
+  //          min ||Av + c||             (2a)
+  //   subject to ||v|| < 0.8Δ           (2b)
+  //              vₛ > -(τ/2)e           (2c)
   //
-  // The constraints (1d) and (2c) are equivelent to the "fraction to boundary" rule,
+  //   r = Av + c
+  //
+  // The constraints (1d) and (2c) are equivelent to the "fraction to the boundary" rule,
   // and are applied by backtracking the solution vector.
   //
   // The iterates are applied like so
   //
-  // xₖ₊₁ = xₖ + αₖpₖˣ
-  // sₖ₊₁ = sₖ + αₖpₖˢ
+  //   xₖ₊₁ = xₖ + αₖpₖˣ
+  //   sₖ₊₁ = sₖ + αₖpₖˢ
   //
   // [1] Nocedal, J. and Wright, S. "Numerical Optimization", 2nd. ed., Ch. 19.
   //     Springer, 2006.
