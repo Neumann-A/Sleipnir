@@ -380,6 +380,73 @@ SolverStatus OptimizationProblem::Solve(const SolverConfig& config) {
 Eigen::VectorXd OptimizationProblem::InteriorPoint(
     const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
     SolverStatus* status) {
+  // Let f(x)ₖ be the cost function, cₑ(x)ₖ be the equality constraints, and
+  // cᵢ(x)ₖ be the inequality constraints. The Lagrangian of the optimization
+  // problem is
+  //
+  //   L(x, s, y, z)ₖ = f(x)ₖ − yₖᵀcₑ(x)ₖ − zₖᵀ(cᵢ(x)ₖ − sₖ)
+  //
+  // Let H be the Hessian of the Lagrangian.
+  //  
+  //        min f(x) - μΣ(ln(s))
+  // subject to cₑ(x) = 0
+  //            cᵢ(x) - s = 0
+  //
+  // Redefine iterate step as
+  //
+  // p = [p_x] = [  d_x ]
+  //     [p_s]   [S⁻¹d_s]
+  //
+  // Constraint value vector
+  //
+  // c = [  cₑ  ]
+  //     [cᵢ - s]
+  //
+  // Constraint Jacobian
+  //
+  // A = [Aₑ  0]
+  //     [Aᵢ -S]
+  //
+  // Gradient of the objective function with respect to p.
+  //
+  // Φ = [ ∇f]
+  //     [-μe]
+  //
+  // Hessian of the objective function with respect to p.
+  //
+  // W = [H   0]
+  //     [0  μI]
+  //
+  // Approximating the objective function and constraints as a quadratic programming problem.
+  //
+  //        min ½pᵀWp + pᵀΦ             (1a)
+  // subject to Ap + c = r              (1b)
+  //            ||p|| < Δ               (1c)
+  //            pₛ > -(τ/2)e            (1d)
+  //
+  // An inexact solution to the subproblem is computed in two stages. 
+  // The residual r is first computed from the subproblem:
+  //
+  //        min ||Av + c||             (2a)
+  // subject to ||v|| < 0.8Δ           (2b)
+  //            vₛ > -(τ/2)e           (2c)
+  //s
+  // r = Av + c
+  //
+  // The constraints (1d) and (2c) are equivelent to the "fraction to boundary" rule,
+  // and are applied by backtracking the solution vector.
+  //
+  // The iterates are applied like so
+  //
+  // xₖ₊₁ = xₖ + αₖpₖˣ
+  // sₖ₊₁ = sₖ + αₖpₖˢ
+  //
+  // [1] Nocedal, J. and Wright, S. "Numerical Optimization", 2nd. ed., Ch. 19.
+  //     Springer, 2006.
+  // [2] Byrd, R. and Gilbert, J. and Nocedal, J. "A Trust Region Method Based on 
+  //     Interior Point Techniques for Nonlinear Programming", 1998.
+  //     http://users.iems.northwestern.edu/~nocedal/PDFfiles/byrd-gilb.pdf
+  
   auto solveStartTime = std::chrono::system_clock::now();
 
   if (m_config.diagnostics) {
@@ -403,7 +470,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   double old_mu = mu;
 
   // Trust region size delta
-  double delta = 1;
+  double delta = 1.0;
 
   Eigen::VectorXd p;
 
@@ -807,7 +874,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         }
       }
 
-      step = ProjectedCG(p, W, -phi, A, delta);
+      step = ProjectedCG(p, W, phi, A, delta);
 
       x += step.segment(0, x.rows());
       s += S * step.segment(x.rows(), s.rows());
@@ -826,7 +893,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         }
         fmt::print("{:>4}  {:>9}  {:>9.3e}  {:>13.3e}\n", iterations,
                    ToMilliseconds(innerIterEndTime - innerIterStartTime), E_mu,
-                   c_e.lpNorm<1>() + (c_i - s).lpNorm<1>());
+                   std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()));
       }
 
       ++iterations;
