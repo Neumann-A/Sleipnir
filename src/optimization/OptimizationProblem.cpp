@@ -454,6 +454,12 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // [2] Byrd, R. and Gilbert, J. and Nocedal, J. "A Trust Region Method Based
   //     on Interior Point Techniques for Nonlinear Programming", 1998.
   //     http://users.iems.northwestern.edu/~nocedal/PDFfiles/byrd-gilb.pdf
+  // [3] Wächter, A. and Biegler, L. "On the implementation of an interior-point
+  //     filter line-search algorithm for large-scale nonlinear programming",
+  //     2005. http://cepac.cheme.cmu.edu/pasilectures/biegler/ipopt.pdf
+  // [4] Byrd, R. and Nocedal J. and Waltz R. "KNITRO: An Integrated Package for
+  //     Nonlinear Optimization", 2005.
+  //     https://users.iems.northwestern.edu/~nocedal/PDFfiles/integrated.pdf
 
   auto solveStartTime = std::chrono::system_clock::now();
 
@@ -758,7 +764,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       //
       // where cᵢ⁺ = min(cᵢ, 0).
       //
-      // See "Infeasibility detection" in section 6 of [3].
+      // See "Infeasibility detection" in section 6 of [4].
       //
       // cᵢ⁺ is used instead of cᵢ⁻ from the paper to follow the convention that
       // feasible inequality constraints are ≥ 0.
@@ -823,7 +829,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       //   cᵢ − s = 0
       //
       // The error tolerance is the max of the following infinity norms scaled
-      // by s_d and s_c (see equation (5) in [2]).
+      // by s_d and s_c (see equation (5) in [3]).
       //
       //   ||∇f − Aₑᵀy − Aᵢᵀz||_∞ / s_d
       //   ||Sz − μe||_∞ / s_c
@@ -920,7 +926,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     //
     //   μⱼ₊₁ = max(εₜₒₗ/10, min(κ_μ μⱼ, μⱼ^θ_μ))
     //
-    // See equation (7) in [2].
+    // See equation (7) in [3].
     old_mu = mu;
     mu = std::max(m_config.tolerance / 10.0,
                   std::min(kappa_mu * mu, std::pow(mu, theta_mu)));
