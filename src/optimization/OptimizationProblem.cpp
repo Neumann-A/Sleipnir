@@ -389,16 +389,17 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Let H be the Hessian of the Lagrangian.
   //
   // The primal formulation takes the form [2]:
-  //  
+  //
   //                       m
   //          min f(x) - μ(Σ ln(sᵢ))
   //                      i=1
   //   subject to cₑ(x) = 0
   //              cᵢ(x) - s = 0
   //
-  // Where m is the number of inequality constraints, and μ is the "barrier parameter".
+  // Where m is the number of inequality constraints, and μ is the "barrier
+  // parameter".
   //
-  // Redefine iterate step as
+  // Redefine the iterate step as
   //
   //   p = [p_x] = [  d_x ]
   //       [p_s]   [S⁻¹d_s]
@@ -422,16 +423,16 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   //
   //   W = [H   0]
   //       [0  μI]
-  //  
-  // Approximate the objective function and constraints as the quadratic programming problem
-  // shown in equation 19.33 of [1].
+  //
+  // Approximate the objective function and constraints as the quadratic
+  // programming problem shown in equation 19.33 of [1].
   //
   //          min ½pᵀWp + pᵀΦ             (1a)
   //   subject to Ap + c = r              (1b)
   //              ||p|| < Δ               (1c)
   //              pₛ > -(τ/2)e            (1d)
   //
-  // An inexact solution to the subproblem is computed in two stages. 
+  // An inexact solution to the subproblem is computed in two stages.
   // The residual r is first computed from the subproblem:
   //
   //          min ||Av + c||             (2a)
@@ -440,8 +441,8 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   //
   //   r = Av + c
   //
-  // The constraints (1d) and (2c) are equivelent to the "fraction to the boundary" rule,
-  // and are applied by backtracking the solution vector.
+  // The constraints (1d) and (2c) are equivelent to the "fraction to the
+  // boundary" rule, and are applied by backtracking the solution vector.
   //
   // The iterates are applied like so
   //
@@ -450,10 +451,10 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   //
   // [1] Nocedal, J. and Wright, S. "Numerical Optimization", 2nd. ed., Ch. 19.
   //     Springer, 2006.
-  // [2] Byrd, R. and Gilbert, J. and Nocedal, J. "A Trust Region Method Based on 
-  //     Interior Point Techniques for Nonlinear Programming", 1998.
+  // [2] Byrd, R. and Gilbert, J. and Nocedal, J. "A Trust Region Method Based
+  //     on Interior Point Techniques for Nonlinear Programming", 1998.
   //     http://users.iems.northwestern.edu/~nocedal/PDFfiles/byrd-gilb.pdf
-  
+
   auto solveStartTime = std::chrono::system_clock::now();
 
   if (m_config.diagnostics) {
