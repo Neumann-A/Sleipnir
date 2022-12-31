@@ -109,18 +109,35 @@ double QuadraticFormula(double a, double b, double c, double sign) {
 }
 
 /**
+ * Applies fraction-to-the-boundary rule to a variable and its iterate, then
+ * returns a fraction of the iterate step size within (0, 1].
+ *
+ * @param x The variable.
+ * @param p The iterate on the variable.
+ * @param tau Fraction-to-the-boundary rule scaling factor.
+ * @return Fraction of the iterate step size within (0, 1].
+ */
+double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& p,
+                                 double tau) {
+  // αᵐᵃˣ = max(α ∈ (0, 1] : αp ≥ −τe)
+  double alpha = 1;
+  for (int i = 0; i < p.rows(); ++i) {
+    if (p(i) != 0.0) {
+      while (alpha * p(i) < -tau) {
+        alpha *= 0.999;
+      }
+    }
+  }
+
+  return alpha;
+}
+
+/**
  * Computes an approximate solution to the problem:
  *
  *        min (1/2)xᵀGx + xᵀc
  * subject to Ax = 0
  *            |x| < Δ
- *
- *        min (1/2)xᵀGx + xᵀc
- * subject to Ax = 0
- *            |x|² = Δ
- *
- *
- *
  *
  * @param initialX The initial step.
  * @param G
@@ -422,7 +439,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Hessian of the objective function with respect to p.
   //
   //   W = [H   0]
-  //       [0  μI]
+  //       [0   S]
   //
   // Approximate the objective function and constraints as the quadratic
   // programming problem shown in equation 19.33 of [1].
@@ -482,6 +499,10 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Barrier parameter μ
   double mu = 0.1;
   double old_mu = mu;
+
+  //
+  double tau_min = 0.995;
+  double tau = tau_min;
 
   // Trust region size delta
   double delta = 1.0;
@@ -749,7 +770,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       triplets.clear();
       AssignSparseBlock(triplets, 0, 0, H);
       AssignSparseBlock(triplets, H.rows(), H.cols(), Z * S);
-      Eigen::SparseMatrix<double> W{H.rows() + S.rows(), H.cols() + S.cols()};
+      Eigen::SparseMatrix<double> W{x.rows() + s.rows(), x.rows() + s.rows()};
       W.setFromTriplets(triplets.begin(), triplets.end());
 
       // Hₖ = ∇²ₓₓL(x, s, y, z)ₖ
@@ -888,7 +909,11 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         }
       }
 
+      p *= FractionToTheBoundaryRule(p.bottomRows(s.rows()), tau / 2);
+
       step = ProjectedCG(p, W, phi, A, delta);
+
+      step *= FractionToTheBoundaryRule(step.bottomRows(s.rows()), tau);
 
       x += step.segment(0, x.rows());
       s += S * step.segment(x.rows(), s.rows());
@@ -930,6 +955,13 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     old_mu = mu;
     mu = std::max(m_config.tolerance / 10.0,
                   std::min(kappa_mu * mu, std::pow(mu, theta_mu)));
+
+    // Update the fraction-to-the-boundary rule scaling factor.
+    //
+    //   τⱼ = max(τₘᵢₙ, 1 − μⱼ)
+    //
+    // See equation (8) in [3].
+    tau = std::max(tau_min, 1.0 - mu);
   }
 
   return x;
