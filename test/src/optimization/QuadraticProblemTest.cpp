@@ -1,6 +1,7 @@
 // Copyright (c) Sleipnir contributors
 
 #include <gtest/gtest.h>
+#include <iostream>
 #include <sleipnir/optimization/OptimizationProblem.hpp>
 
 TEST(QuadraticProblemTest, Unconstrained1d) {
@@ -114,6 +115,9 @@ TEST(QuadraticProblemTest, EqualityConstrained) {
     problem.SubjectTo(x + 3 * y == 36);
 
     auto status = problem.Solve({.diagnostics = true});
+
+    std::cout << "x: " << x.Value() << std::endl;
+    std::cout << "y: " << y.Value() << std::endl;
 
     EXPECT_EQ(sleipnir::ExpressionType::kQuadratic, status.costFunctionType);
     EXPECT_EQ(sleipnir::ExpressionType::kLinear, status.equalityConstraintType);

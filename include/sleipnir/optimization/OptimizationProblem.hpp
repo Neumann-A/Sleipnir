@@ -293,6 +293,8 @@ class SLEIPNIR_DLLEXPORT OptimizationProblem {
    */
   SolverStatus Solve(const SolverConfig& config = kDefaultConfig);
 
+  Eigen::VectorXd ModifiedCholesky(Eigen::SparseMatrix<double>& lhs, Eigen::VectorXd& rhs);
+
  private:
   // GCC incorrectly applies C++14 rules for const static data members, so an
   // initializer is required here.
@@ -333,6 +335,10 @@ class SLEIPNIR_DLLEXPORT OptimizationProblem {
   @param[out] status The solver status.
   */
   Eigen::VectorXd InteriorPoint(
+      const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
+      SolverStatus* status);
+
+  Eigen::VectorXd AugmentedLagrangian(
       const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
       SolverStatus* status);
 };

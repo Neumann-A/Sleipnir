@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <iostream>
 
 #include <Eigen/Core>
 #include <Eigen/SparseCholesky>
@@ -17,6 +18,11 @@
 #include <Eigen/SparseQR>
 #include <fmt/core.h>
 
+#include "Eigen/src/Core/TriangularMatrix.h"
+#include "Eigen/src/Core/util/Constants.h"
+#include "Eigen/src/SparseCore/SparseMatrix.h"
+#include "Eigen/src/SparseCore/SparseUtil.h"
+#include "Eigen/src/SparseLU/SparseLU.h"
 #include "ScopeExit.hpp"
 #include "sleipnir/autodiff/Expression.hpp"
 #include "sleipnir/autodiff/ExpressionGraph.hpp"
@@ -151,10 +157,10 @@ Eigen::VectorXd ProjectedCG(Eigen::VectorXd initialGuess,
   // [B  Aᵀ]
   // [A  0 ]
   std::vector<Eigen::Triplet<double>> triplets;
-  // AssignSparseBlock(triplets, 0, 0, G);
-  for (int row = 0; row < G.rows(); ++row) {
-    triplets.emplace_back(row, row, 1.0);
-  }
+  AssignSparseBlock(triplets, 0, 0, G);
+  // for (int row = 0; row < G.rows(); ++row) {
+    // triplets.emplace_back(row, row, 1.0);
+  // }
   AssignSparseBlock(triplets, G.rows(), 0, A);
   AssignSparseBlock(triplets, 0, G.cols(), A, true);
   Eigen::SparseMatrix<double> P{G.rows() + A.rows(), G.cols() + A.rows()};
@@ -369,7 +375,7 @@ SolverStatus OptimizationProblem::Solve(const SolverConfig& config) {
   }
 
   // Solve the optimization problem
-  Eigen::VectorXd solution = InteriorPoint(x, &status);
+  Eigen::VectorXd solution = AugmentedLagrangian(x, &status);
 
   if (m_config.diagnostics) {
     fmt::print("Exit condition: ");
@@ -965,4 +971,200 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   }
 
   return x;
+}
+
+Eigen::VectorXd OptimizationProblem::ModifiedCholesky(Eigen::SparseMatrix<double>& lhs, Eigen::VectorXd& rhs) {
+  // GMW algorithm from section 2.1 of 
+  // http://eprints.maths.manchester.ac.uk/2599/1/modified_cholesky_decomposition_and_applications.pdf
+  auto t0 = std::chrono::system_clock::now();
+  double copyTime = 0.0;
+  int n = rhs.rows();
+  Eigen::VectorXd vectorD{n};
+  Eigen::SparseMatrix<double> matrixL{n, n};
+  std::vector<Eigen::Triplet<double>> triplets;
+
+  Eigen::SparseMatrix<double>& mat = lhs;
+
+  double delta = 1e-16;
+  double beta = 100;
+
+  auto sparseInfinityNorm = [](Eigen::SparseMatrix<double>& A) {
+    double norm = 0.0;
+    for (int k = 0; k < A.outerSize(); ++k) {
+      for (Eigen::SparseMatrix<double>::InnerIterator it{A, k}; it; ++it) {
+        norm = std::max(norm, std::abs(it.value()));
+      }
+    }
+    return norm;
+  };
+
+  // std::cout << "begin iterations" << std::endl;
+
+  auto t1 = std::chrono::system_clock::now();
+  for (int row = 0; row < n; ++row) {
+    // [A Bᵀ] 
+    // [B C ]
+    //
+    // dⱼ = max{δ, |A|, |B|∞² / β²}
+    Eigen::SparseMatrix<double> B = mat.block(1, 0, mat.rows() - 1, 1);
+    vectorD(row) = std::max(delta, std::max(std::abs(mat.coeff(0, 0)), std::pow(sparseInfinityNorm(B) / beta, 2)));
+    // vectorD(row) = mat.coeff(0, 0);
+
+    // [A Bᵀ] = [ I    0][A     0    ][I  A⁻¹Bᵀ]
+    // [B C ]   [BA⁻¹  I][0  C - BABᵀ][0   I  ]
+    double A = vectorD(row);
+    triplets.emplace_back(row, row, 1.0);
+    AssignSparseBlock(triplets, row + 1, row, B / A);
+    auto c0 = std::chrono::system_clock::now();
+    mat = mat.block(1, 1, mat.rows() - 1, mat.cols() - 1) - B * (1/A) * B.transpose();
+    auto c1 = std::chrono::system_clock::now();
+    copyTime += (c1 - c0).count() / 1000.0;
+  }
+  auto t2 = std::chrono::system_clock::now();
+  std::cout << "copy time: " << copyTime << "ms" << std::endl;
+  std::cout << "iterations time: " << (t2 - t1).count() / 1000.0 << "ms" << std::endl;
+
+  // std::cout << "end iterations" << std::endl;
+
+  matrixL.setFromTriplets(triplets.begin(), triplets.end());
+  Eigen::TriangularView<Eigen::SparseMatrix<double>, Eigen::Lower> L{matrixL};
+
+  // std::cout << "Matrix L: \n" << matrixL.toDense() << std::endl;
+  // std::cout << "Vector D: \n" << vectorD << std::endl;
+  // std::cout << "matrix LT: \n" << matrixL.transpose().toDense() << std::endl;
+  // std::cout << "Modified matrix: \n" << (matrixL * vectorD.asDiagonal() * matrixL.transpose()).toDense() << std::endl;
+
+  // Ax = b
+  // LDLᵀx = b
+  // Ly = b
+  // Dz = y
+  // Lᵀw = z
+  auto t3 = std::chrono::system_clock::now();
+  std::cout << "Solve time: " << (t3 - t0).count() / 1000.0 << "ms" << std::endl;
+  return L.transpose().solve(L.solve(rhs).cwiseQuotient(vectorD));
+}
+
+Eigen::VectorXd OptimizationProblem::AugmentedLagrangian(
+    const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
+    SolverStatus* status) {
+
+  // auto solveStartTime = std::chrono::system_clock::now();
+
+  // Barrier parameter μ
+  // double mu = 0.1;
+
+  // double tau_min = 0.995;
+  // double tau = tau_min;
+
+  double armijo_parameter = 1e-4;
+
+  std::vector<Eigen::Triplet<double>> triplets;
+
+  // x̂ = [x]
+  //     [s]
+  std::vector<Variable> variables = m_decisionVariables;
+  for (size_t var = 0; var < m_inequalityConstraints.size(); ++ var) {
+    variables.emplace_back(1);
+  }
+  MapVectorXvar xHatAD{variables.data(), 
+                       static_cast<Eigen::Index>(variables.size())};
+  Eigen::VectorXd xHat = Eigen::VectorXd(xHatAD.size());
+  xHat.topRows(initialGuess.rows()) = initialGuess;
+  xHat.bottomRows(m_inequalityConstraints.size()) = Eigen::VectorXd::Ones(m_inequalityConstraints.size());
+  SetAD(xHatAD, xHat);
+  
+  MapVectorXvar c_eAD(m_equalityConstraints.data(),
+                      m_equalityConstraints.size());
+  MapVectorXvar c_iAD(m_inequalityConstraints.data(),
+                      m_inequalityConstraints.size());
+
+  Variable penalty{MakeConstant(1000000.0)};
+
+  Variable penaltyFunction = m_f.value();
+  if (m_equalityConstraints.size() > 0) {
+    penaltyFunction += penalty * c_eAD.dot(c_eAD);
+  }
+  if (m_inequalityConstraints.size() > 0) {
+    penaltyFunction += penalty * (c_iAD - xHatAD.bottomRows(m_inequalityConstraints.size())).dot(
+                                  c_iAD - xHatAD.bottomRows(m_inequalityConstraints.size()));
+  }
+  ExpressionGraph penaltyGraph{penaltyFunction};
+
+  penaltyGraph.Update();
+
+  Gradient gradient{penaltyFunction, xHatAD};
+  Hessian hessian{penaltyFunction, xHatAD};
+
+  // Gradient of f ∇f
+  Eigen::SparseVector<double> g = gradient.Calculate();
+
+  // Hessian of the Lagrangian H
+  //
+  // Hₖ = ∇²ₓₓL(x, s, y, z)ₖ
+  Eigen::SparseMatrix<double> H = hessian.Calculate();
+
+  // Equality constraints cₑ
+  Eigen::VectorXd c_e{m_equalityConstraints.size()};
+
+  // auto iterationsStartTime = std::chrono::system_clock::now();
+
+  for (int iterations = 0; iterations < m_config.maxIterations; ++iterations) {
+    auto innerIterStartTime = std::chrono::system_clock::now();
+
+    std::cout << "--------------------------------------" << std::endl;
+
+    std::cout << "objective value: " << penaltyFunction.Value() << std::endl;
+
+    // Value of f
+    double f = penaltyFunction.Value();
+
+    // Gradient of f ∇f
+    g = gradient.Calculate();
+
+    // Hₖ = ∇²ₓₓL(x, s, y, z)ₖ
+    auto hessianBegin = std::chrono::system_clock::now();
+    H = hessian.Calculate();
+    auto hessianEnd = std::chrono::system_clock::now();
+    std::cout << "hessian time: " << (hessianEnd - hessianBegin).count() / 1000.0 << "ms" << std::endl;
+
+    // std::cout << "Hessian: \n" << H.toDense() << std::endl;
+
+    auto solverBegin = std::chrono::system_clock::now();
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver{H};
+    auto solverEnd = std::chrono::system_clock::now();
+    std::cout << "solver time: " << (solverEnd - solverBegin).count() / 1000.0 << "ms" << std::endl;
+
+    auto backsolveBegin = std::chrono::system_clock::now();
+    Eigen::VectorXd rhs = -g.toDense();
+    Eigen::VectorXd step = ModifiedCholesky(H, rhs);
+    // Eigen::VectorXd step = solver.solve(-g);
+    // Eigen::VectorXd step = -g / g.norm();
+    auto backsolveEnd = std::chrono::system_clock::now();
+    std::cout << "backsolve time: " << (backsolveEnd - backsolveBegin).count() / 1000.0 << "ms" << std::endl;
+    SetAD(xHatAD, xHat);
+
+    // SetAD(xAD, x);
+    // SetAD(sAD, s);
+    
+    auto updateBegin = std::chrono::system_clock::now();
+    penaltyGraph.Update();
+    auto innerIterEndTime = std::chrono::system_clock::now();
+    auto updateEnd = std::chrono::system_clock::now();
+    std::cout << "update time: " << (updateEnd - updateBegin).count() / 1000.0 << "ms" << std::endl;
+
+    double alpha = 1.0;
+    while (penaltyFunction.Value() - f > armijo_parameter * alpha * g.dot(step)) {
+      alpha *= 0.95;
+      SetAD(xHatAD, xHat + alpha * step);
+      penaltyGraph.Update();
+    }
+
+    xHat += alpha * step;
+
+    std::cout << "iterate time: " << (innerIterEndTime - innerIterStartTime).count() / 1000.0 << "ms" << std::endl;
+
+    std::cout << "error: " << g.norm() / g.size() << std::endl;
+  }
+
+  return xHat.topRows(initialGuess.rows());
 }
