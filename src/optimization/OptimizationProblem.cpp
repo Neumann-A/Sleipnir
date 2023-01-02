@@ -68,7 +68,7 @@ void SetAD(Eigen::Ref<VectorXvar> dest,
 double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& p,
                                  double tau) {
   // αᵐᵃˣ = max(α ∈ (0, 1] : αp ≥ −τe)
-  double alpha = 1;
+  double alpha = 1.0;
   for (int i = 0; i < p.rows(); ++i) {
     if (p(i) != 0.0) {
       while (alpha * p(i) < -tau) {
