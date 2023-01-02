@@ -14,7 +14,6 @@
 #include <Eigen/SparseCholesky>
 #include <Eigen/SparseCore>
 #include <Eigen/SparseLU>
-#include <Eigen/SparseQR>
 #include <fmt/core.h>
 
 #include "ScopeExit.hpp"
@@ -56,6 +55,29 @@ void SetAD(Eigen::Ref<VectorXvar> dest,
   for (int row = 0; row < dest.rows(); ++row) {
     dest(row) = src(row);
   }
+}
+
+/**
+ * Applies fraction-to-the-boundary rule to a variable and its iterate, then
+ * returns a fraction of the iterate step size within (0, 1].
+ *
+ * @param p The iterate on the variable.
+ * @param tau Fraction-to-the-boundary rule scaling factor.
+ * @return Fraction of the iterate step size within (0, 1].
+ */
+double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& p,
+                                 double tau) {
+  // αᵐᵃˣ = max(α ∈ (0, 1] : αp ≥ −τe)
+  double alpha = 1;
+  for (int i = 0; i < p.rows(); ++i) {
+    if (p(i) != 0.0) {
+      while (alpha * p(i) < -tau) {
+        alpha *= 0.999;
+      }
+    }
+  }
+
+  return alpha;
 }
 
 /**
@@ -106,30 +128,6 @@ double ToMilliseconds(const std::chrono::duration<Rep, Period>& duration) {
  */
 double QuadraticFormula(double a, double b, double c, double sign) {
   return (-b + sign * std::sqrt(b * b - 4.0 * a * c)) / (2.0 * a);
-}
-
-/**
- * Applies fraction-to-the-boundary rule to a variable and its iterate, then
- * returns a fraction of the iterate step size within (0, 1].
- *
- * @param x The variable.
- * @param p The iterate on the variable.
- * @param tau Fraction-to-the-boundary rule scaling factor.
- * @return Fraction of the iterate step size within (0, 1].
- */
-double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& p,
-                                 double tau) {
-  // αᵐᵃˣ = max(α ∈ (0, 1] : αp ≥ −τe)
-  double alpha = 1;
-  for (int i = 0; i < p.rows(); ++i) {
-    if (p(i) != 0.0) {
-      while (alpha * p(i) < -tau) {
-        alpha *= 0.999;
-      }
-    }
-  }
-
-  return alpha;
 }
 
 /**
@@ -494,6 +492,9 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Barrier parameter scale factor κ_μ for tolerance checks
   constexpr double kappa_epsilon = 10.0;
 
+  // Fraction-to-the-boundary rule scale factor minimum
+  constexpr double tau_min = 0.99;
+
   // Barrier parameter linear decrease power in "κ_μ μ". Range of (0, 1).
   constexpr double kappa_mu = 0.2;
 
@@ -504,11 +505,10 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   double mu = 0.1;
   double old_mu = mu;
 
-  //
-  double tau_min = 0.995;
+  // Fraction-to-the-boundary rule scale factor τ
   double tau = tau_min;
 
-  // Trust region size delta
+  // Trust region size Δ
   double delta = 100.0;
 
   Eigen::VectorXd p;
