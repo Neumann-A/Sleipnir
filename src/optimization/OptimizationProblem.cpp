@@ -508,8 +508,15 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Fraction-to-the-boundary rule scale factor τ
   double tau = tau_min;
 
+  // Trust region maximum size Δ̂
+  constexpr double delta_max = 1e3;
+
   // Trust region size Δ
-  double delta = 100.0;
+  double delta = delta_max;
+
+  // Merit function threshold η [0, 1/4). Larger values make step acceptance
+  // stricter.
+  constexpr double eta = 0.1;
 
   Eigen::VectorXd p;
 
@@ -915,16 +922,43 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
       p *= FractionToTheBoundaryRule(p.bottomRows(s.rows()), tau / 2);
 
-      step = ProjectedCG(p, W, phi, A, delta);
+      // See algorithm 4.1 in [1]
+      {
+        step = ProjectedCG(p, W, phi, A, delta);
 
-      step *= FractionToTheBoundaryRule(step.bottomRows(s.rows()), tau);
+        step *= FractionToTheBoundaryRule(step.bottomRows(s.rows()), tau);
 
-      x += step.segment(0, x.rows());
-      s += S * step.segment(x.rows(), s.rows());
+        double fOld = m_f.value().Value();
+        SetAD(xAD, x + step.segment(0, x.rows()));
+        m_f.value().Update();
+        double fNew = m_f.value().Value();
 
-      SetAD(xAD, x);
-      SetAD(sAD, s);
-      graphL.Update();
+        // Merit function for the step p
+        auto m = [&](const Eigen::VectorXd& p) {
+          return fOld + g.transpose() * p + 0.5 * p.transpose() * H * p;
+        };
+
+        // The merit rho
+        double rho = (fOld - fNew) / (fOld - m(step.segment(0, x.rows())));
+
+        if (rho < 0.25) {
+          delta *= 0.25;
+        } else {
+          if (rho > 0.75 && step.segment(0, x.rows()).norm() == delta) {
+            delta = std::min(2.0 * delta, delta_max);
+          }
+        }
+
+        // If rho > eta, accept the step
+        if (rho > eta) {
+          x += step.segment(0, x.rows());
+          s += S * step.segment(x.rows(), s.rows());
+
+          SetAD(xAD, x);
+          SetAD(sAD, s);
+          graphL.Update();
+        }
+      }
 
       auto innerIterEndTime = std::chrono::system_clock::now();
 
