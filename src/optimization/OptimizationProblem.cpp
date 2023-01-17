@@ -930,5 +930,11 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     tau = std::max(tau_min, 1.0 - mu);
   }
 
+  if (m_config.diagnostics) {
+    fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations, 0.0,
+               E_mu, m_f.value().Value() - mu * s.array().log().sum(),
+               c_e.lpNorm<1>() + (c_i - s).lpNorm<1>());
+  }
+
   return x;
 }
