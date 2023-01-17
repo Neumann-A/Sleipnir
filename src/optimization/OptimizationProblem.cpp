@@ -815,9 +815,14 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       double alpha_max = FractionToTheBoundaryRule(s, p_s, tau);
 
       // Adaptively scale merit function penalty parameter.
-      double penaltyNumerator = ((alpha_max * p_x).transpose() * g)(0) - mu * (S.cwiseInverse() * alpha_max * p_s).array().sum();
-      double penaltyDenominator = 0.9 * (std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()) - 
-                                         std::sqrt((A_e * alpha_max * p_x + c_e).squaredNorm() + (A_i * alpha_max * p_x - alpha_max * p_s + c_i - s).squaredNorm()));
+      double penaltyNumerator =
+          ((alpha_max * p_x).transpose() * g)(0) -
+          mu * (S.cwiseInverse() * alpha_max * p_s).array().sum();
+      double penaltyDenominator =
+          0.9 * (std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()) -
+                 std::sqrt((A_e * alpha_max * p_x + c_e).squaredNorm() +
+                           (A_i * alpha_max * p_x - alpha_max * p_s + c_i - s)
+                               .squaredNorm()));
       while (true) {
         if (v > penaltyNumerator / penaltyDenominator) {
           break;
@@ -826,8 +831,10 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       }
 
       // Merit function from section 19.4 of [1].
-      auto m = [](double f, Eigen::VectorXd c_e, Eigen::VectorXd c_i, Eigen::VectorXd s, double mu, double v) {
-        return f - mu * s.array().log().sum() + v * (c_e.norm() + (c_i - s).norm());
+      auto m = [](double f, Eigen::VectorXd c_e, Eigen::VectorXd c_i,
+                  Eigen::VectorXd s, double mu, double v) {
+        return f - mu * s.array().log().sum() +
+               v * (c_e.norm() + (c_i - s).norm());
       };
 
       double initialMerit = m(m_f.value().Value(), c_e, c_i, s, mu, v);
@@ -842,7 +849,8 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         c_e = GetAD(m_equalityConstraints);
         c_i = GetAD(m_inequalityConstraints);
 
-        if (m(m_f.value().Value(), c_e, c_i, trial_s, mu, v) - initialMerit <= 0) {
+        if (m(m_f.value().Value(), c_e, c_i, trial_s, mu, v) - initialMerit <=
+            0) {
           break;
         }
 
