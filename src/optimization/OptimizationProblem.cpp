@@ -26,70 +26,6 @@
 using namespace sleipnir;
 
 namespace {
-/**
- * Filter entry consisting of objective value and constraint value.
- */
-struct FilterEntry {
-  /// The objective function's value
-  double objective = 0.0;
-
-  /// The constraint violation
-  double constraintViolation = 0.0;
-
-  constexpr FilterEntry() = default;
-
-  /**
-   * Constructs a FilterEntry.
-   *
-   * @param f The objective function.
-   * @param mu The barrier parameter.
-   * @param s The inequality constraint slack variables.
-   * @param c_e The equality constraint values (nonzero means violation).
-   * @param c_i The inequality constraint values (negative means violation).
-   */
-  FilterEntry(const Variable& f, double mu, Eigen::VectorXd& s,
-              const Eigen::VectorXd& c_e, const Eigen::VectorXd& c_i)
-      : objective{f.Value() - mu * s.array().log().sum()},
-        constraintViolation{c_e.lpNorm<1>() + (c_i - s).lpNorm<1>()} {}
-};
-
-struct Filter {
-  std::vector<FilterEntry> filter;
-
-  double maxConstraintViolation;
-  double minConstraintViolation;
-
-  double gamma_constraint = 0;
-  double gamma_objective = 0;
-
-  explicit Filter(FilterEntry pair) {
-    filter.push_back(pair);
-    minConstraintViolation = 1e-4 * std::max(1.0, pair.constraintViolation);
-    maxConstraintViolation = 1e4 * std::max(1.0, pair.constraintViolation);
-  }
-
-  void PushBack(FilterEntry pair) { filter.push_back(pair); }
-
-  void ResetFilter(FilterEntry pair) {
-    filter.clear();
-    filter.push_back(pair);
-  }
-
-  bool IsStepAcceptable(const FilterEntry& pair) {
-    // If current filter entry is better than all prior ones in some respect,
-    // accept it
-    return std::all_of(
-               filter.begin(), filter.end(),
-               [&](const auto& entry) {
-                 return pair.objective <=
-                            entry.objective -
-                                gamma_objective * entry.constraintViolation ||
-                        pair.constraintViolation <=
-                            (1 - gamma_constraint) * entry.constraintViolation;
-               }) &&
-           pair.constraintViolation < maxConstraintViolation;
-  }
-};
 
 /**
  * Assigns the contents of a double vector to an autodiff vector.
@@ -524,6 +460,9 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   // Fraction-to-the-boundary rule scale factor τ
   double tau = tau_min;
 
+  // Merit function penalty parameter v
+  double v = 10;
+
   std::vector<Eigen::Triplet<double>> triplets;
 
   Eigen::VectorXd x = initialGuess;
@@ -581,8 +520,6 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
   // Inequality constraints cᵢ
   Eigen::VectorXd c_i = GetAD(m_inequalityConstraints);
-
-  Filter filter{FilterEntry(m_f.value(), mu, s, c_e, c_i)};
 
   // Equality constraint Jacobian Aₑ
   //
@@ -875,59 +812,27 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       Eigen::VectorXd p_s =
           mu * Z.cwiseInverse() * e - s - S * Z.cwiseInverse() * p_z;
 
-      FilterEntry currentFilterEntry;
-
-      bool stepAcceptable = false;
-
       double alpha_max = FractionToTheBoundaryRule(s, p_s, tau);
 
-      // Apply second order corrections. See section 2.4 of [2].
-      Eigen::VectorXd p_x_soc = p_x;
-      Eigen::VectorXd p_s_soc = p_s;
-      Eigen::VectorXd p_y_soc, p_z_soc;
-      for (int soc_iteration = 0; soc_iteration < 5; ++soc_iteration) {
-        double alpha_soc = FractionToTheBoundaryRule(s, p_s_soc, tau);
-        Eigen::VectorXd x_soc = x + alpha_soc * p_x_soc;
-        Eigen::VectorXd s_soc = s + alpha_soc * p_s_soc;
-        SetAD(xAD, x_soc);
-        SetAD(sAD, s_soc);
-        graphL.Update();
-        c_e = GetAD(m_equalityConstraints);
-        c_i = GetAD(m_inequalityConstraints);
-
-        currentFilterEntry = FilterEntry(m_f.value(), mu, s_soc, c_e, c_i);
-        if (filter.IsStepAcceptable(currentFilterEntry)) {
-          p_x = p_x_soc;
-          p_s = p_s_soc;
-          alpha_max = alpha_soc;
-          stepAcceptable = true;
+      // Adaptively scale merit function penalty parameter.
+      double penaltyNumerator = ((alpha_max * p_x).transpose() * g)(0) - mu * (S.cwiseInverse() * alpha_max * p_s).array().sum();
+      double penaltyDenominator = 0.9 * (std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()) - 
+                                         std::sqrt((A_e * alpha_max * p_x + c_e).squaredNorm() + (A_i * alpha_max * p_x - alpha_max * p_s + c_i - s).squaredNorm()));
+      while (true) {
+        if (v > penaltyNumerator / penaltyDenominator) {
           break;
         }
-
-        // Rebuild Newton-KKT rhs with updated constraint values.
-        rhs.topRows(x.rows()) = g;
-        if (m_equalityConstraints.size() > 0) {
-          rhs.topRows(x.rows()) -= A_e.transpose() * y;
-        }
-        if (m_inequalityConstraints.size() > 0) {
-          rhs.topRows(x.rows()) +=
-              A_i.transpose() *
-              (SparseDiagonal(s_soc).cwiseInverse() * (Z * c_i - mu * e) - z);
-        }
-        rhs.bottomRows(y.rows()) = c_e;
-
-        // Solve the Newton-KKT system
-        step = solver.Solve(-rhs);
-
-        p_x_soc = step.segment(0, x.rows());
-        p_y_soc = -step.segment(x.rows(), y.rows());
-        p_z_soc =
-            -sigma * c_i + mu * S.cwiseInverse() * e - sigma * A_i * p_x_soc;
-        p_s_soc =
-            mu * Z.cwiseInverse() * e - s - sigma.cwiseInverse() * p_z_soc;
+        v *= 2;
       }
 
-      while (!stepAcceptable) {
+      // Merit function from section 19.4 of [1].
+      auto m = [](double f, Eigen::VectorXd c_e, Eigen::VectorXd c_i, Eigen::VectorXd s, double mu, double v) {
+        return f - mu * s.array().log().sum() + v * (c_e.norm() + (c_i - s).norm());
+      };
+
+      double initialMerit = m(m_f.value().Value(), c_e, c_i, s, mu, v);
+
+      while (true) {
         Eigen::VectorXd trial_x = x + alpha_max * p_x;
         Eigen::VectorXd trial_s = s + alpha_max * p_s;
         SetAD(xAD, trial_x);
@@ -937,13 +842,12 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         c_e = GetAD(m_equalityConstraints);
         c_i = GetAD(m_inequalityConstraints);
 
-        currentFilterEntry = FilterEntry{m_f.value(), mu, trial_s, c_e, c_i};
-        if (filter.IsStepAcceptable(currentFilterEntry)) {
+        if (m(m_f.value().Value(), c_e, c_i, trial_s, mu, v) - initialMerit <= 0) {
           break;
         }
+
         alpha_max *= 0.5;
       }
-      filter.PushBack(currentFilterEntry);
 
       // αₖᶻ = max(α ∈ (0, 1] : zₖ + αpₖᶻ ≥ (1−τⱼ)zₖ)
       double alpha_z = FractionToTheBoundaryRule(z, p_z, tau);
@@ -985,8 +889,8 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         }
         fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations,
                    ToMilliseconds(innerIterEndTime - innerIterStartTime), E_mu,
-                   currentFilterEntry.objective,
-                   currentFilterEntry.constraintViolation);
+                   m_f.value().Value() - s.array().log().sum(),
+                   c_e.norm() + (c_i - s).norm());
       }
 
       ++iterations;
@@ -1016,9 +920,6 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     //
     // See equation (8) in [2].
     tau = std::max(tau_min, 1.0 - mu);
-
-    // Reset the filter when the barrier parameter is updated.
-    filter.ResetFilter(FilterEntry(m_f.value(), mu, s, c_e, c_i));
   }
 
   return x;
