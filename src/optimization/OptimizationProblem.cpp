@@ -823,8 +823,18 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
                  std::sqrt((A_e * alpha_max * p_x + c_e).squaredNorm() +
                            (A_i * alpha_max * p_x - alpha_max * p_s + c_i - s)
                                .squaredNorm()));
-      while (v < penaltyNumerator / penaltyDenominator) {
+      // penaltyDenominator moved to the left-hand side to avoid a potential
+      // divide-by-zero
+      while (penaltyDenominator * v < penaltyNumerator) {
         v *= 2;
+
+        // Cap penalty parameter since as the infeasibility approaches zero, the
+        // denominator of the penalty parameter approaches zero and the penalty
+        // parameter explodes. This leads to really small steps.
+        if (v > 1e5) {
+          v = 1e5;
+          break;
+        }
       }
 
       // Merit function from section 19.4 of [1].
