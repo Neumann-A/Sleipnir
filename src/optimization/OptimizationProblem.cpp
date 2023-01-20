@@ -815,8 +815,9 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       double alpha_max = FractionToTheBoundaryRule(s, p_s, tau);
 
       // Adaptively scale merit function penalty parameter.
+      // See equation (18.36) in [1].
       double penaltyNumerator =
-          ((alpha_max * p_x).transpose() * g)(0) -
+          (g.transpose() * (alpha_max * p_x)) -
           mu * (S.cwiseInverse() * alpha_max * p_s).array().sum();
       double penaltyDenominator =
           0.9 * (std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()) -
