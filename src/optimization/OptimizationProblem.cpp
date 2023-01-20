@@ -823,10 +823,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
                  std::sqrt((A_e * alpha_max * p_x + c_e).squaredNorm() +
                            (A_i * alpha_max * p_x - alpha_max * p_s + c_i - s)
                                .squaredNorm()));
-      while (true) {
-        if (v > penaltyNumerator / penaltyDenominator) {
-          break;
-        }
+      while (v < penaltyNumerator / penaltyDenominator) {
         v *= 2;
       }
 
