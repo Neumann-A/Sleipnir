@@ -814,13 +814,14 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
       double alpha_max = FractionToTheBoundaryRule(s, p_s, tau);
 
-      // Adaptively scale merit function penalty parameter.
+      // Adaptively scale merit function penalty parameter v.
       // See equation (18.36) in [1].
       constexpr double rho = 0.9;
       Eigen::VectorXd p_x_scaled = alpha_max * p_x;
       double penaltyNumerator = g.transpose() * p_x_scaled;
-      if (p_x_scaled.transpose() * H * p_x_scaled > 0.0) {
-        penaltyNumerator += 0.5 * p_x_scaled.transpose() * H * p_x_scaled;
+      double secondOrderStep = p_x_scaled.transpose() * H * p_x_scaled;
+      if (secondOrderStep > 0.0) {
+        penaltyNumerator += 0.5 * secondOrderStep;
       }
       double penaltyDenominator =
           (1.0 - rho) * std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm());
