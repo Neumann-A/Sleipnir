@@ -781,7 +781,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       g = gradientF.Calculate();
 
       // rhs = −[∇f − Aₑᵀy + Aᵢᵀ(S⁻¹(Zcᵢ − μe) − z)]
-      //        [               cₑ               ]
+      //        [                cₑ                ]
       //
       // The outer negative sign is applied in the solve() call.
       Eigen::VectorXd rhs{x.rows() + y.rows()};
@@ -816,6 +816,15 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
       // Adaptively scale merit function penalty parameter v.
       // See equation (18.36) in [1].
+      //
+      //       ∇fᵀpₖˣ + (σ/2)pₖˣᵀHₖpₖˣ
+      // v ≥ ----------------------------
+      //     (1 − ρ)(||cₑ|| + ||cᵢ − s||)
+      //
+      // ρ ∈ (0, 1)
+      //
+      // σ = 1 if pₖˣᵀHₖpₖˣ > 0
+      //     0 otherwise
       constexpr double rho = 0.1;
       Eigen::VectorXd p_x_scaled = alpha_max * p_x;
       double penaltyNumerator = g.transpose() * p_x_scaled;
@@ -842,12 +851,16 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       // Merit function from equation (19.26) of [1].
       auto m = [](double f, Eigen::VectorXd c_e, Eigen::VectorXd c_i,
                   Eigen::VectorXd s, double mu, double v) {
+        //          m
+        // f(x) − μ Σ log(sᵢ) + v ||cₑ(x)|| + v ||cᵢ(x) − s||
+        //         i=1
         return f - mu * s.array().log().sum() +
                v * (c_e.norm() + (c_i - s).norm());
       };
 
       double initialMerit = m(m_f.value().Value(), c_e, c_i, s, mu, v);
 
+      // Find trial step that results in merit function decrease
       while (true) {
         Eigen::VectorXd trial_x = x + alpha_max * p_x;
         Eigen::VectorXd trial_s = s + alpha_max * p_s;
