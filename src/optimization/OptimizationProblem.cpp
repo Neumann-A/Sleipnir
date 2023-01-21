@@ -816,7 +816,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
       // Adaptively scale merit function penalty parameter v.
       // See equation (18.36) in [1].
-      constexpr double rho = 0.9;
+      constexpr double rho = 0.1;
       Eigen::VectorXd p_x_scaled = alpha_max * p_x;
       double penaltyNumerator = g.transpose() * p_x_scaled;
       double secondOrderStep = p_x_scaled.transpose() * H * p_x_scaled;
