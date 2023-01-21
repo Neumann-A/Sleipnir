@@ -816,14 +816,17 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
       // Adaptively scale merit function penalty parameter.
       // See equation (18.36) in [1].
+      constexpr double rho = 0.9;
+      Eigen::VectorXd p_x_scaled = alpha_max * p_x;
+      Eigen::VectorXd p_s_scaled = alpha_max * p_s;
       double penaltyNumerator =
-          (g.transpose() * (alpha_max * p_x)) -
-          mu * (S.cwiseInverse() * alpha_max * p_s).array().sum();
+          (g.transpose() * p_x_scaled) -
+          mu * (S.cwiseInverse() * p_s_scaled).array().sum();
+      if (p_x_scaled.transpose() * H * p_x_scaled > 0.0) {
+        penaltyNumerator += 0.5 * p_x_scaled.transpose() * H * p_x_scaled;
+      }
       double penaltyDenominator =
-          0.9 * (std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()) -
-                 std::sqrt((A_e * alpha_max * p_x + c_e).squaredNorm() +
-                           (A_i * alpha_max * p_x - alpha_max * p_s + c_i - s)
-                               .squaredNorm()));
+          (1.0 - rho) * std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm());
       // penaltyDenominator moved to the left-hand side to avoid a potential
       // divide-by-zero
       while (penaltyDenominator * v < penaltyNumerator) {
@@ -831,14 +834,14 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
         // Cap penalty parameter since as the infeasibility approaches zero, the
         // denominator of the penalty parameter approaches zero and the penalty
-        // parameter explodes. This leads to really small steps.
-        if (v > 1e5) {
-          v = 1e5;
+        // parameter becomes NaN. This breaks arithmetic in the merit function.
+        if (v > 1e10) {
+          v = 1e10;
           break;
         }
       }
 
-      // Merit function from section 19.4 of [1].
+      // Merit function from equation (19.26) of [1].
       auto m = [](double f, Eigen::VectorXd c_e, Eigen::VectorXd c_i,
                   Eigen::VectorXd s, double mu, double v) {
         return f - mu * s.array().log().sum() +
@@ -858,7 +861,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         c_i = GetAD(m_inequalityConstraints);
 
         if (m(m_f.value().Value(), c_e, c_i, trial_s, mu, v) - initialMerit <=
-            0) {
+            0.0) {
           break;
         }
 
