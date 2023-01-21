@@ -858,8 +858,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         c_e = GetAD(m_equalityConstraints);
         c_i = GetAD(m_inequalityConstraints);
 
-        if (m(m_f.value().Value(), c_e, c_i, trial_s, mu, v) - initialMerit <=
-            0.0) {
+        if (m(m_f.value().Value(), c_e, c_i, trial_s, mu, v) <= initialMerit) {
           break;
         }
 
