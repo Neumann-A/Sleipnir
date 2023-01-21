@@ -818,10 +818,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       // See equation (18.36) in [1].
       constexpr double rho = 0.9;
       Eigen::VectorXd p_x_scaled = alpha_max * p_x;
-      Eigen::VectorXd p_s_scaled = alpha_max * p_s;
-      double penaltyNumerator =
-          (g.transpose() * p_x_scaled) -
-          mu * (S.cwiseInverse() * p_s_scaled).array().sum();
+      double penaltyNumerator = g.transpose() * p_x_scaled;
       if (p_x_scaled.transpose() * H * p_x_scaled > 0.0) {
         penaltyNumerator += 0.5 * p_x_scaled.transpose() * H * p_x_scaled;
       }
