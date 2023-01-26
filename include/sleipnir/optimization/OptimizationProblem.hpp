@@ -335,6 +335,10 @@ class SLEIPNIR_DLLEXPORT OptimizationProblem {
   Eigen::VectorXd InteriorPoint(
       const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
       SolverStatus* status);
+
+  Eigen::VectorXd ActiveSet(
+      const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
+      SolverStatus* status);
 };
 
 }  // namespace sleipnir

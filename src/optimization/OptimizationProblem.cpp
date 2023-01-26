@@ -10,10 +10,15 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <iostream>
 
 #include <Eigen/SparseCore>
+#include <Eigen/SparseCholesky>
 #include <fmt/core.h>
 
+#include "Eigen/src/Core/Matrix.h"
+#include "Eigen/src/SparseCholesky/SimplicialCholesky.h"
+#include "Eigen/src/SparseCore/SparseMatrix.h"
 #include "RegularizedLDLT.hpp"
 #include "ScopeExit.hpp"
 #include "sleipnir/autodiff/Expression.hpp"
@@ -76,6 +81,16 @@ Eigen::SparseMatrix<double> SparseDiagonal(const Eigen::VectorXd& src) {
     triplets.emplace_back(row, row, src(row));
   }
   Eigen::SparseMatrix<double> dest{src.rows(), src.rows()};
+  dest.setFromTriplets(triplets.begin(), triplets.end());
+  return dest;
+}
+
+Eigen::SparseMatrix<double> SparseIdentity(int size) {
+  std::vector<Eigen::Triplet<double>> triplets;
+  for (int row = 0; row < size; ++row) {
+    triplets.emplace_back(row, row, 1.0);
+  }
+  Eigen::SparseMatrix<double> dest{size, size};
   dest.setFromTriplets(triplets.begin(), triplets.end());
   return dest;
 }
@@ -270,7 +285,7 @@ SolverStatus OptimizationProblem::Solve(const SolverConfig& config) {
   }
 
   // Solve the optimization problem
-  Eigen::VectorXd solution = InteriorPoint(x, &status);
+  Eigen::VectorXd solution = ActiveSet(x, &status);
 
   if (m_config.diagnostics) {
     fmt::print("Exit condition: ");
@@ -955,6 +970,359 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations, 0.0,
                E_mu, m_f.value().Value() - mu * s.array().log().sum(),
                c_e.lpNorm<1>() + (c_i - s).lpNorm<1>());
+  }
+
+  return x;
+}
+
+Eigen::VectorXd OptimizationProblem::ActiveSet(
+    const Eigen::Ref<const Eigen::VectorXd>& initialGuess,
+    SolverStatus* status) {
+
+  auto solveStartTime = std::chrono::system_clock::now();
+
+  if (m_config.diagnostics) {
+    fmt::print("Number of equality constraints: {}\n",
+               m_equalityConstraints.size());
+    fmt::print("Number of inequality constraints: {}\n\n",
+               m_inequalityConstraints.size());
+  }
+
+  // Merit function penalty parameter v
+  // double v = 10;
+
+  std::vector<Eigen::Triplet<double>> triplets;
+
+  // Working set containing indices of active constraints
+  std::vector<int> workingSet;
+
+  Eigen::VectorXd x = initialGuess;
+  MapVectorXvar xAD(m_decisionVariables.data(), m_decisionVariables.size());
+  Eigen::VectorXd y = Eigen::VectorXd::Ones(m_equalityConstraints.size());
+  VectorXvar yAD = VectorXvar::Ones(m_equalityConstraints.size());
+  Eigen::VectorXd z = Eigen::VectorXd::Ones(m_inequalityConstraints.size());
+  VectorXvar zAD = VectorXvar::Ones(m_inequalityConstraints.size());
+
+  MapVectorXvar c_eAD(m_equalityConstraints.data(),
+                      m_equalityConstraints.size());
+  MapVectorXvar c_iAD(m_inequalityConstraints.data(),
+                      m_inequalityConstraints.size());
+
+  // L(x, s, y, z)ₖ = f(x)ₖ − yₖᵀcₑ(x)ₖ − zₖᵀcᵢ(x)ₖ
+  Variable L = m_f.value();
+  if (m_equalityConstraints.size() > 0) {
+    L -= yAD.transpose() * c_eAD;
+  }
+  if (m_inequalityConstraints.size() > 0) {
+    L -= zAD.transpose() * (c_iAD);
+  }
+  ExpressionGraph graphL{L};
+
+  SetAD(xAD, x);
+  graphL.Update();
+
+  Gradient gradientF{m_f.value(), xAD};
+  Hessian hessianL{L, xAD};
+  Jacobian jacobianCe{c_eAD, xAD};
+  Jacobian jacobianCi{c_iAD, xAD};
+
+  // Gradient of f ∇f
+  Eigen::SparseVector<double> g = gradientF.Calculate();
+
+  // Hessian of the Lagrangian H
+  //
+  // Hₖ = ∇²ₓₓL(x, s, y, z)ₖ
+  Eigen::SparseMatrix<double> H = hessianL.Calculate();
+
+  // Equality constraints cₑ
+  Eigen::VectorXd c_e = GetAD(m_equalityConstraints);
+
+  // Inequality constraints cᵢ
+  Eigen::VectorXd c_i = GetAD(m_inequalityConstraints);
+
+  // Equality constraint Jacobian Aₑ
+  //
+  //         [∇ᵀcₑ₁(x)ₖ]
+  // Aₑ(x) = [∇ᵀcₑ₂(x)ₖ]
+  //         [    ⋮    ]
+  //         [∇ᵀcₑₘ(x)ₖ]
+  Eigen::SparseMatrix<double> A_e = jacobianCe.Calculate();
+
+  // Inequality constraint Jacobian Aᵢ
+  //
+  //         [∇ᵀcᵢ₁(x)ₖ]
+  // Aᵢ(x) = [∇ᵀcᵢ₂(x)ₖ]
+  //         [    ⋮    ]
+  //         [∇ᵀcᵢₘ(x)ₖ]
+  Eigen::SparseMatrix<double> A_i = jacobianCi.Calculate();
+
+  auto iterationsStartTime = std::chrono::system_clock::now();
+
+  if (m_config.diagnostics) {
+    // Print number of nonzeros in Lagrangian Hessian and constraint Jacobians
+    std::string prints;
+
+    if (status->costFunctionType <= ExpressionType::kQuadratic &&
+        status->equalityConstraintType <= ExpressionType::kQuadratic &&
+        status->inequalityConstraintType <= ExpressionType::kQuadratic) {
+      prints += fmt::format("Number of nonzeros in Lagrangian Hessian: {}\n",
+                            H.nonZeros());
+    }
+    if (status->equalityConstraintType <= ExpressionType::kLinear) {
+      prints += fmt::format(
+          "Number of nonzeros in equality constraint Jacobian: {}\n",
+          A_e.nonZeros());
+    }
+    if (status->inequalityConstraintType <= ExpressionType::kLinear) {
+      prints += fmt::format(
+          "Number of nonzeros in inequality constraint Jacobian: {}\n",
+          A_i.nonZeros());
+    }
+
+    if (prints.length() > 0) {
+      fmt::print("{}\n", prints);
+    }
+
+    fmt::print("Error tolerance: {}\n\n", m_config.tolerance);
+  }
+
+  // Check for overconstrained problem
+  if (m_equalityConstraints.size() > m_decisionVariables.size()) {
+    fmt::print("The problem has too few degrees of freedom.\n");
+    fmt::print("Violated constraints (cₑ(x) = 0) in order of declaration:\n");
+    for (int row = 0; row < c_e.rows(); ++row) {
+      if (c_e(row) < 0.0) {
+        fmt::print("  {}/{}: {} = 0\n", row + 1, c_e.rows(), c_e(row));
+      }
+    }
+
+    status->exitCondition = SolverExitCondition::kTooFewDOFs;
+    return x;
+  }
+
+  int iterations = 0;
+
+  scope_exit exit{[&] {
+    if (m_config.diagnostics) {
+      auto solveEndTime = std::chrono::system_clock::now();
+
+      fmt::print("\nSolve time: {} ms\n",
+                 ToMilliseconds(solveEndTime - solveStartTime));
+      fmt::print("  ↳ {} ms (IPM setup)\n",
+                 ToMilliseconds(iterationsStartTime - solveStartTime));
+      if (iterations > 0) {
+        fmt::print(
+            "  ↳ {} ms ({} IPM iterations; {} ms average)\n",
+            ToMilliseconds(solveEndTime - iterationsStartTime), iterations,
+            ToMilliseconds((solveEndTime - iterationsStartTime) / iterations));
+      }
+      fmt::print("\n");
+
+      constexpr auto format = "{:>8}  {:>10}  {:>14}  {:>6}\n";
+      fmt::print(format, "autodiff", "setup (ms)", "avg solve (ms)", "solves");
+      fmt::print("{:=^44}\n", "");
+      fmt::print(format, "∇f(x)", gradientF.GetProfiler().SetupDuration(),
+                 gradientF.GetProfiler().AverageSolveDuration(),
+                 gradientF.GetProfiler().SolveMeasurements());
+      fmt::print(format, "∇²ₓₓL", hessianL.GetProfiler().SetupDuration(),
+                 hessianL.GetProfiler().AverageSolveDuration(),
+                 hessianL.GetProfiler().SolveMeasurements());
+      fmt::print(format, "∂cₑ/∂x", jacobianCe.GetProfiler().SetupDuration(),
+                 jacobianCe.GetProfiler().AverageSolveDuration(),
+                 jacobianCe.GetProfiler().SolveMeasurements());
+      fmt::print(format, "∂cᵢ/∂x", jacobianCi.GetProfiler().SetupDuration(),
+                 jacobianCi.GetProfiler().AverageSolveDuration(),
+                 jacobianCi.GetProfiler().SolveMeasurements());
+      fmt::print("\n");
+    }
+  }};
+
+  while (true) {
+    auto innerIterStartTime = std::chrono::system_clock::now();
+
+    // Update Aₑ and Aᵢ
+    A_e = jacobianCe.Calculate();
+    A_i = jacobianCi.Calculate();
+
+    // Update cₑ and cᵢ
+    c_e = GetAD(m_equalityConstraints);
+    c_i = GetAD(m_inequalityConstraints);
+
+    // Hₖ = ∇²ₓₓL(x, s, y, z)ₖ
+    H = hessianL.Calculate();
+
+    g = gradientF.Calculate();
+
+    // Regularize Hessian
+    int positiveEigenvalues = 0;
+    Eigen::SparseMatrix<double> B;
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver{H};
+    for (auto element : solver.vectorD()) {
+      if (element > 0) {
+        ++positiveEigenvalues;
+      }
+    }
+    if (positiveEigenvalues == H.rows()) {
+      B = H;
+    } else {
+      double power = 1e-6;
+      while (true) {
+        positiveEigenvalues = 0;
+        solver.compute(H + power * SparseIdentity(H.rows()));
+        for (auto element : solver.vectorD()) {
+          if (element > 0) {
+            ++positiveEigenvalues;
+          }
+        }
+        if (positiveEigenvalues == H.rows()) {
+          B = H + power * SparseIdentity(H.rows());
+          break;
+        }
+        power *= 10.0;
+      }
+    }
+
+    // std::cout << "x: \n" << x << std::endl;
+
+    // std::cout << "Hessian: \n" << B.toDense() << std::endl;
+    
+    // Solve quadratic subproblem
+    //
+    //          min f(xₖ) + pᵀ∇f(xₖ) + ½pᵀBp
+    //   subject to Aₑp + cₑ = 0
+    //              Aᵢp + cᵢ ≥ 0
+    workingSet.clear();
+    while (true) {
+      // Constraint matrix A
+      triplets.clear();
+      AssignSparseBlock(triplets, 0, 0, A_e);
+      for (size_t index = 0; index < workingSet.size(); ++index) {
+        for (int col = 0; col < x.rows(); ++col) {
+          double coeff = A_i.coeff(workingSet[index], col);
+          if (coeff != 0.0) {
+            triplets.emplace_back(A_e.rows() + index, col, coeff);
+          }
+        }
+      }
+      Eigen::SparseMatrix<double> A{static_cast<int>(A_e.rows() + workingSet.size()), x.rows()};
+      A.setFromTriplets(triplets.begin(), triplets.end());
+
+      // KKT system lhs
+      triplets.clear();
+      AssignSparseBlock(triplets, 0, 0, B);
+      AssignSparseBlock(triplets, H.rows(), 0, A);
+      AssignSparseBlock(triplets, 0, H.cols(), A.transpose());
+      Eigen::SparseMatrix<double> lhs{H.rows() + A.rows(), H.cols() + A.rows()};
+      lhs.setFromTriplets(triplets.begin(), triplets.end());
+
+      // KKT system rhs
+      //
+      //   [∇f − Aₑᵀy - Aᵢᵀz]
+      //   [        c       ]
+      Eigen::VectorXd rhs{H.rows() + A.rows()};
+      rhs.segment(0, x.rows()) = g - A_e * y - A_i * z;
+      rhs.segment(x.rows(), m_equalityConstraints.size()) = c_e;
+      for (size_t row = 0; row < workingSet.size(); ++row) {
+        rhs(x.rows() + c_e.rows() + row) = c_i(workingSet[row]);
+      }
+
+      solver.compute(lhs);
+      Eigen::VectorXd sol = solver.solve(rhs);
+      Eigen::VectorXd p = -sol.segment(0, x.rows());
+      Eigen::VectorXd equalityMultipliers = sol.segment(x.rows(), c_e.rows());
+      Eigen::VectorXd workingSetMultipliers = sol.segment(x.rows() + c_e.rows(), workingSet.size());
+
+      std::cout << "x rows: " << x.rows() << " A rows: " << A.rows() << " rhs bottom rows: " << c_e.rows() + workingSet.size() << std::endl;
+      std::cout << "Constraint satisfaction: " << (A * p + rhs.bottomRows(c_e.rows() + workingSet.size())).norm() << std::endl;
+
+      double infeasibility = c_e.lpNorm<1>();
+      for (double constraint : (A_i * p + c_i)) {
+        infeasibility += std::max(0.0, -constraint);
+      }
+
+      std::cout << "c_e: " << (A_e * p + c_e).lpNorm<1>() << " c_i: " << infeasibility << std::endl;
+
+      if (infeasibility < 1e-6) {
+        // Remove constraint with most negative multiplier from the active set
+        int minMultiplierIndex = 0;
+        double minMultiplierValue = 0;
+        for (int row = 0; row < workingSetMultipliers.rows(); ++row) {
+          if (workingSetMultipliers(row) < minMultiplierValue) {
+            minMultiplierIndex = row;
+            minMultiplierValue = workingSetMultipliers(row);
+          }
+        }
+        // If all multipliers are non-negative, terminate; otherwise remove constraint with most negative multipilier.
+        if (minMultiplierValue < 0.0) {
+          workingSet.erase(workingSet.begin() + minMultiplierIndex);
+        } else {
+          x += p;
+          y = equalityMultipliers;
+          Eigen::VectorXd inequalityMultipliers = Eigen::VectorXd::Zero(c_i.size());
+          for (size_t row = 0; row < workingSet.size(); ++row) {
+            inequalityMultipliers(workingSet[row]) = workingSetMultipliers(row);
+          }
+          SetAD(xAD, x);
+          SetAD(yAD, y);
+          SetAD(zAD, inequalityMultipliers);
+          graphL.Update();
+          break;
+        }
+      } else {
+        // Add most violated constraint to active set
+        int minConstraintIndex = 0;
+        double minConstraintValue = 0;
+        Eigen::VectorXd residuals = A_i * p + c_i;
+        for (int row = 0; row < residuals.rows(); ++row) {
+          if (residuals(row) < minConstraintValue) {
+            minConstraintIndex = row;
+            minConstraintValue = residuals(row);
+          }
+        }
+        // std::cout << "min constraint: " << minConstraintValue << std::endl;
+        if (minConstraintValue < -1e-9 && std::find(workingSet.begin(), workingSet.end(), minConstraintIndex) == workingSet.end()) {
+          workingSet.push_back(minConstraintIndex);
+        }
+      }
+
+      std::cout << "Active-set size: " << workingSet.size() << std::endl;
+    }
+
+    auto innerIterEndTime = std::chrono::system_clock::now();
+
+    double infeasibility = c_e.lpNorm<1>();
+    for (double constraint : c_i) {
+      infeasibility += std::max(0.0, -constraint);
+    }
+
+    if (m_config.diagnostics) {
+      if (iterations % 20 == 0) {
+        fmt::print("{:>4}   {:>10}  {:>10}   {:>16}  {:>19}\n", "iter",
+                    "time (ms)", "error", "objective", "infeasibility");
+        fmt::print("{:=^70}\n", "");
+      }
+      fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations,
+                  ToMilliseconds(innerIterEndTime - innerIterStartTime), m_f.value().Value() + c_e.norm(),
+                  m_f.value().Value(),
+                  infeasibility);
+    }
+
+    ++iterations;
+    if (iterations >= m_config.maxIterations) {
+      status->exitCondition = SolverExitCondition::kMaxIterations;
+      return x;
+    }
+
+    if (innerIterEndTime - solveStartTime > m_config.timeout) {
+      status->exitCondition = SolverExitCondition::kTimeout;
+      return x;
+    }
+  }
+
+  if (m_config.diagnostics) {
+    // fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations, 0.0,
+    //            E_mu, m_f.value().Value() - mu * s.array().log().sum(),
+    //            c_e.lpNorm<1>() + (c_i - s).lpNorm<1>());
   }
 
   return x;
