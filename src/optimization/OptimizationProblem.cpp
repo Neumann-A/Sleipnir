@@ -1182,111 +1182,94 @@ Eigen::VectorXd OptimizationProblem::ActiveSet(
       }
     }
 
-    // std::cout << "x: \n" << x << std::endl;
-
-    // std::cout << "Hessian: \n" << B.toDense() << std::endl;
-    
     // Solve quadratic subproblem
     //
     //          min f(xₖ) + pᵀ∇f(xₖ) + ½pᵀBp
     //   subject to Aₑp + cₑ = 0
     //              Aᵢp + cᵢ ≥ 0
-    workingSet.clear();
-    while (true) {
-      // Constraint matrix A
-      triplets.clear();
-      AssignSparseBlock(triplets, 0, 0, A_e);
-      for (size_t index = 0; index < workingSet.size(); ++index) {
-        for (int col = 0; col < x.rows(); ++col) {
-          double coeff = A_i.coeff(workingSet[index], col);
-          if (coeff != 0.0) {
-            triplets.emplace_back(A_e.rows() + index, col, coeff);
-          }
-        }
-      }
-      Eigen::SparseMatrix<double> A{static_cast<int>(A_e.rows() + workingSet.size()), x.rows()};
-      A.setFromTriplets(triplets.begin(), triplets.end());
 
-      // KKT system lhs
+    // Initialize lagrange multipliers
+    Eigen::VectorXd e = Eigen::VectorXd::Ones(c_i.rows());
+    Eigen::VectorXd p = Eigen::VectorXd::Zero(x.rows());
+    Eigen::VectorXd s = Eigen::VectorXd::Ones(c_i.rows());
+    y = Eigen::VectorXd::Ones(c_e.rows());
+    z = Eigen::VectorXd::Ones(s.rows());
+    Eigen::VectorXd _g = g;
+    Eigen::VectorXd _c_e = c_e;
+    Eigen::VectorXd _c_i = c_i;
+    double mu = 1;
+    for (int iterate = 0; iterate < 20; ++iterate) {
+      // S
+      Eigen::SparseMatrix<double> S = SparseDiagonal(s);
+
+      // Z
+      Eigen::SparseMatrix<double> Z = SparseDiagonal(z);
+
+      // The primal-dual barrier term Hessian Σ is defined as
+      //
+      //   Σ = S⁻¹Z
+      Eigen::SparseMatrix<double> sigma = S.cwiseInverse() * Z;
+
+      // KKT lhs
+      //
+      //   [H + AᵢᵀΣAᵢ  Aₑᵀ]
+      //   [    Aₑ       0 ]
       triplets.clear();
-      AssignSparseBlock(triplets, 0, 0, B);
-      AssignSparseBlock(triplets, H.rows(), 0, A);
-      AssignSparseBlock(triplets, 0, H.cols(), A.transpose());
-      Eigen::SparseMatrix<double> lhs{H.rows() + A.rows(), H.cols() + A.rows()};
+      AssignSparseBlock(triplets, 0, 0, H + A_i.transpose() * sigma * A_i);
+      AssignSparseBlock(triplets, H.rows(), 0, A_e);
+      AssignSparseBlock(triplets, 0, H.cols(), A_e.transpose());
+      Eigen::SparseMatrix<double> lhs{H.rows() + A_e.rows(), H.cols() + A_e.rows()};
       lhs.setFromTriplets(triplets.begin(), triplets.end());
 
-      // KKT system rhs
+      // KKT rhs
       //
-      //   [∇f − Aₑᵀy - Aᵢᵀz]
-      //   [        c       ]
-      Eigen::VectorXd rhs{H.rows() + A.rows()};
-      rhs.segment(0, x.rows()) = g - A_e * y - A_i * z;
-      rhs.segment(x.rows(), m_equalityConstraints.size()) = c_e;
-      for (size_t row = 0; row < workingSet.size(); ++row) {
-        rhs(x.rows() + c_e.rows() + row) = c_i(workingSet[row]);
+      //   [∇f − Aₑᵀy + Aᵢᵀ(S⁻¹(Zcᵢ − μe) − z)]
+      //   [                cₑ                ]
+      Eigen::VectorXd rhs{lhs.rows()};
+      rhs.topRows(x.rows()) = _g - A_e.transpose() * y + A_i.transpose() * (S.cwiseInverse() * (Z * _c_i) - z);
+      rhs.bottomRows(c_e.rows()) = _c_e;
+
+      // Solve KKT system
+      Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver{lhs};
+      Eigen::VectorXd step = solver.solve(-rhs);
+
+      // step = [ pₖˣ]
+      //        [−pₖʸ]
+      Eigen::VectorXd p_x = step.segment(0, x.rows());
+      Eigen::VectorXd p_y = -step.segment(x.rows(), y.rows());
+
+      // pₖᶻ = −Σcᵢ + μS⁻¹e − ΣAᵢpₖˣ
+      Eigen::VectorXd p_z =
+          -sigma * _c_i + mu * S.cwiseInverse() * e - sigma * A_i * p_x;
+
+      // pₖˢ = μZ⁻¹e − s − Σ⁻¹pₖᶻ
+      Eigen::VectorXd p_s =
+          mu * Z.cwiseInverse() * e - s - S * Z.cwiseInverse() * p_z;
+
+      p += 0.5 * p_x;
+      s += 0.5 * p_s;
+      y += 0.5 * p_y;
+      z += 0.5 * p_z;
+
+      _c_e = A_e * p + c_e;
+      _c_i = A_i * p + c_i;
+      _g = H * p + g;
+
+      double infeasibility = 0.0;
+      for (auto element : _c_i) {
+        infeasibility += std::max(-element, 0.0);
       }
 
-      solver.compute(lhs);
-      Eigen::VectorXd sol = solver.solve(rhs);
-      Eigen::VectorXd p = -sol.segment(0, x.rows());
-      Eigen::VectorXd equalityMultipliers = sol.segment(x.rows(), c_e.rows());
-      Eigen::VectorXd workingSetMultipliers = sol.segment(x.rows() + c_e.rows(), workingSet.size());
+      mu *= 0.2;
 
-      std::cout << "x rows: " << x.rows() << " A rows: " << A.rows() << " rhs bottom rows: " << c_e.rows() + workingSet.size() << std::endl;
-      std::cout << "Constraint satisfaction: " << (A * p + rhs.bottomRows(c_e.rows() + workingSet.size())).norm() << std::endl;
-
-      double infeasibility = c_e.lpNorm<1>();
-      for (double constraint : (A_i * p + c_i)) {
-        infeasibility += std::max(0.0, -constraint);
-      }
-
-      std::cout << "c_e: " << (A_e * p + c_e).lpNorm<1>() << " c_i: " << infeasibility << std::endl;
-
-      if (infeasibility < 1e-6) {
-        // Remove constraint with most negative multiplier from the active set
-        int minMultiplierIndex = 0;
-        double minMultiplierValue = 0;
-        for (int row = 0; row < workingSetMultipliers.rows(); ++row) {
-          if (workingSetMultipliers(row) < minMultiplierValue) {
-            minMultiplierIndex = row;
-            minMultiplierValue = workingSetMultipliers(row);
-          }
-        }
-        // If all multipliers are non-negative, terminate; otherwise remove constraint with most negative multipilier.
-        if (minMultiplierValue < 0.0) {
-          workingSet.erase(workingSet.begin() + minMultiplierIndex);
-        } else {
-          x += p;
-          y = equalityMultipliers;
-          Eigen::VectorXd inequalityMultipliers = Eigen::VectorXd::Zero(c_i.size());
-          for (size_t row = 0; row < workingSet.size(); ++row) {
-            inequalityMultipliers(workingSet[row]) = workingSetMultipliers(row);
-          }
-          SetAD(xAD, x);
-          SetAD(yAD, y);
-          SetAD(zAD, inequalityMultipliers);
-          graphL.Update();
-          break;
-        }
-      } else {
-        // Add most violated constraint to active set
-        int minConstraintIndex = 0;
-        double minConstraintValue = 0;
-        Eigen::VectorXd residuals = A_i * p + c_i;
-        for (int row = 0; row < residuals.rows(); ++row) {
-          if (residuals(row) < minConstraintValue) {
-            minConstraintIndex = row;
-            minConstraintValue = residuals(row);
-          }
-        }
-        // std::cout << "min constraint: " << minConstraintValue << std::endl;
-        if (minConstraintValue < -1e-9 && std::find(workingSet.begin(), workingSet.end(), minConstraintIndex) == workingSet.end()) {
-          workingSet.push_back(minConstraintIndex);
-        }
-      }
-
-      std::cout << "Active-set size: " << workingSet.size() << std::endl;
+      std::cout << "    ↳ " << iterate << "  \t " << _c_e.lpNorm<1>() << "\t\t" << infeasibility << "\t\t" << (0.5 * p.transpose() * H * p)(0) + g.dot(p) << std::endl;
     }
+
+    x += p;
+
+    SetAD(xAD, x);
+    SetAD(yAD, y);
+    SetAD(zAD, z);
 
     auto innerIterEndTime = std::chrono::system_clock::now();
 

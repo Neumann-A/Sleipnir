@@ -17,7 +17,7 @@ struct SLEIPNIR_DLLEXPORT SolverConfig {
   double tolerance = 1e-6;
 
   /// The maximum number of solver iterations before returning a solution.
-  int maxIterations = 100;
+  int maxIterations = 10;
 
   /// The maximum elapsed wall clock time before returning a solution.
   std::chrono::duration<double> timeout{
