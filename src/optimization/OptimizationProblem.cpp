@@ -620,7 +620,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     }
   }};
 
-  RegularizedLDLT solver{theta_mu};
+  RegularizedLDLT solver;
 
   while (E_mu > m_config.tolerance) {
     while (true) {
