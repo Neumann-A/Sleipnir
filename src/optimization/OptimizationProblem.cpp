@@ -1054,6 +1054,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         }
         fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations,
                    ToMilliseconds(innerIterEndTime - innerIterStartTime), E_mu,
+                   m_f.value().Value(),
                    std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()));
       }
 
