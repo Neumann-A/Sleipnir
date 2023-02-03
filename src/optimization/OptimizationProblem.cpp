@@ -2,6 +2,7 @@
 
 #include "sleipnir/optimization/OptimizationProblem.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -27,6 +28,71 @@
 using namespace sleipnir;
 
 namespace {
+/**
+ * Filter entry consisting of objective value and constraint value.
+ */
+struct FilterEntry {
+  /// The objective function's value
+  double objective = 0.0;
+
+  /// The constraint violation
+  double constraintViolation = 0.0;
+
+  constexpr FilterEntry() = default;
+
+  /**
+   * Constructs a FilterEntry.
+   *
+   * @param f The objective function.
+   * @param mu The barrier parameter.
+   * @param s The inequality constraint slack variables.
+   * @param c_e The equality constraint values (nonzero means violation).
+   * @param c_i The inequality constraint values (negative means violation).
+   */
+  FilterEntry(const Variable& f, double mu, Eigen::VectorXd& s,
+              const Eigen::VectorXd& c_e, const Eigen::VectorXd& c_i)
+      : objective{f.Value() - mu * s.array().log().sum()},
+        constraintViolation{c_e.lpNorm<1>() + (c_i - s).lpNorm<1>()} {}
+};
+
+struct Filter {
+  std::vector<FilterEntry> filter;
+
+  double maxConstraintViolation;
+  double minConstraintViolation;
+
+  double gamma_constraint = 0;
+  double gamma_objective = 0;
+
+  explicit Filter(FilterEntry pair) {
+    filter.push_back(pair);
+    minConstraintViolation = 1e-4 * std::max(1.0, pair.constraintViolation);
+    maxConstraintViolation = 1e4 * std::max(1.0, pair.constraintViolation);
+  }
+
+  void PushBack(FilterEntry pair) { filter.push_back(pair); }
+
+  void ResetFilter(FilterEntry pair) {
+    filter.clear();
+    filter.push_back(pair);
+  }
+
+  bool IsStepAcceptable(const FilterEntry& pair) {
+    // If current filter entry is better than all prior ones in some respect,
+    // accept it
+    return std::all_of(
+               filter.begin(), filter.end(),
+               [&](const auto& entry) {
+                 return pair.objective <=
+                            entry.objective -
+                                gamma_objective * entry.constraintViolation ||
+                        pair.constraintViolation <=
+                            (1 - gamma_constraint) * entry.constraintViolation;
+               }) &&
+           pair.constraintViolation < maxConstraintViolation;
+  }
+};
+
 /**
  * Assigns the contents of a double vector to an autodiff vector.
  *
@@ -55,6 +121,29 @@ void SetAD(Eigen::Ref<VectorXvar> dest,
   for (int row = 0; row < dest.rows(); ++row) {
     dest(row) = src(row);
   }
+}
+
+/**
+ * Gets the contents of a autodiff vector as a double vector.
+ *
+ * @param src The autodiff vector.
+ */
+Eigen::VectorXd GetAD(std::vector<Variable> src) {
+  Eigen::VectorXd dest{src.size()};
+  for (int row = 0; row < dest.size(); ++row) {
+    dest(row) = src[row].Value();
+  }
+  return dest;
+}
+
+Eigen::SparseMatrix<double> SparseDiagonal(const Eigen::VectorXd& src) {
+  std::vector<Eigen::Triplet<double>> triplets;
+  for (int row = 0; row < src.rows(); ++row) {
+    triplets.emplace_back(row, row, src(row));
+  }
+  Eigen::SparseMatrix<double> dest{src.rows(), src.rows()};
+  dest.setFromTriplets(triplets.begin(), triplets.end());
+  return dest;
 }
 
 /**
@@ -483,6 +572,8 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   auto solveStartTime = std::chrono::system_clock::now();
 
   if (m_config.diagnostics) {
+    fmt::print("Number of decision variables: {}\n",
+               m_decisionVariables.size());
     fmt::print("Number of equality constraints: {}\n",
                m_equalityConstraints.size());
     fmt::print("Number of inequality constraints: {}\n\n",
@@ -573,7 +664,12 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   Eigen::SparseMatrix<double> H = hessianL.Calculate();
 
   // Equality constraints cₑ
-  Eigen::VectorXd c_e{m_equalityConstraints.size()};
+  Eigen::VectorXd c_e = GetAD(m_equalityConstraints);
+
+  // Inequality constraints cᵢ
+  Eigen::VectorXd c_i = GetAD(m_inequalityConstraints);
+
+  Filter filter{FilterEntry(m_f.value(), mu, s, c_e, c_i)};
 
   // Equality constraint Jacobian Aₑ
   //
@@ -582,9 +678,6 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
   //         [    ⋮    ]
   //         [∇ᵀcₑₘ(x)ₖ]
   Eigen::SparseMatrix<double> A_e = jacobianCe.Calculate();
-
-  // Inequality constraints cᵢ
-  Eigen::VectorXd c_i{m_inequalityConstraints.size()};
 
   // Inequality constraint Jacobian Aᵢ
   //
@@ -690,12 +783,7 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       // S = [0  ⋱   ⋮ ]
       //     [⋮    ⋱ 0 ]
       //     [0  ⋯ 0 sₘ]
-      triplets.clear();
-      for (int k = 0; k < s.rows(); k++) {
-        triplets.emplace_back(k, k, s[k]);
-      }
-      Eigen::SparseMatrix<double> S{s.rows(), s.rows()};
-      S.setFromTriplets(triplets.begin(), triplets.end());
+      Eigen::SparseMatrix<double> S = SparseDiagonal(s);
 
       //         [∇ᵀcₑ₁(x)ₖ]
       // Aₑ(x) = [∇ᵀcₑ₂(x)ₖ]
@@ -720,12 +808,8 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
       A.setFromTriplets(triplets.begin(), triplets.end());
 
       // Update cₑ and cᵢ
-      for (size_t row = 0; row < m_equalityConstraints.size(); row++) {
-        c_e(row) = m_equalityConstraints[row].Value();
-      }
-      for (size_t row = 0; row < m_inequalityConstraints.size(); row++) {
-        c_i(row) = m_inequalityConstraints[row].Value();
-      }
+      c_e = GetAD(m_equalityConstraints);
+      c_i = GetAD(m_inequalityConstraints);
 
       // c = [  cₑ  ]
       //     [cᵢ - s]
@@ -964,11 +1048,11 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
 
       if (m_config.diagnostics) {
         if (iterations % 20 == 0) {
-          fmt::print("{:>4}  {:>9}  {:>9}  {:>13}\n", "iter", "time (ms)",
-                     "error", "infeasibility");
-          fmt::print("{:=^41}\n", "");
+          fmt::print("{:>4}   {:>10}  {:>10}   {:>16}  {:>19}\n", "iter",
+                     "time (ms)", "error", "objective", "infeasibility");
+          fmt::print("{:=^70}\n", "");
         }
-        fmt::print("{:>4}  {:>9}  {:>9.3e}  {:>13.3e}\n", iterations,
+        fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations,
                    ToMilliseconds(innerIterEndTime - innerIterStartTime), E_mu,
                    std::sqrt(c_e.squaredNorm() + (c_i - s).squaredNorm()));
       }
@@ -1000,6 +1084,15 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
     //
     // See equation (8) in [3].
     tau = std::max(tau_min, 1.0 - mu);
+
+    // Reset the filter when the barrier parameter is updated.
+    filter.ResetFilter(FilterEntry(m_f.value(), mu, s, c_e, c_i));
+  }
+
+  if (m_config.diagnostics) {
+    fmt::print("{:>4}  {:>9}  {:>15e}  {:>16e}   {:>16e}\n", iterations, 0.0,
+               E_mu, m_f.value().Value() - mu * s.array().log().sum(),
+               c_e.lpNorm<1>() + (c_i - s).lpNorm<1>());
   }
 
   return x;

@@ -301,7 +301,7 @@ class SLEIPNIR_DLLEXPORT VariableMatrix {
       for (int j = 0; j < rhs.Cols(); ++j) {
         Variable sum = 0.0;
         for (int k = 0; k < lhs.cols(); ++k) {
-          sum += Variable{MakeConstant(lhs(i, k))} * rhs(k, j);
+          sum += Constant(lhs(i, k)) * rhs(k, j);
         }
         result(i, j) = sum;
       }
@@ -328,7 +328,7 @@ class SLEIPNIR_DLLEXPORT VariableMatrix {
       for (int j = 0; j < rhs.cols(); ++j) {
         Variable sum = 0.0;
         for (int k = 0; k < lhs.Cols(); ++k) {
-          sum += lhs(i, k) * Variable{MakeConstant(rhs(k, j))};
+          sum += lhs(i, k) * Constant(rhs(k, j));
         }
         result(i, j) = sum;
       }
@@ -428,8 +428,7 @@ class SLEIPNIR_DLLEXPORT VariableMatrix {
 
     for (int row = 0; row < result.Rows(); ++row) {
       for (int col = 0; col < result.Cols(); ++col) {
-        result(row, col) =
-            Variable{MakeConstant(lhs(row, col))} + rhs(row, col);
+        result(row, col) = Constant(lhs(row, col)) + rhs(row, col);
       }
     }
 
@@ -450,8 +449,7 @@ class SLEIPNIR_DLLEXPORT VariableMatrix {
 
     for (int row = 0; row < result.Rows(); ++row) {
       for (int col = 0; col < result.Cols(); ++col) {
-        result(row, col) =
-            lhs(row, col) + Variable{MakeConstant(rhs(row, col))};
+        result(row, col) = lhs(row, col) + Constant(rhs(row, col));
       }
     }
 
@@ -489,8 +487,7 @@ class SLEIPNIR_DLLEXPORT VariableMatrix {
 
     for (int row = 0; row < result.Rows(); ++row) {
       for (int col = 0; col < result.Cols(); ++col) {
-        result(row, col) =
-            Variable{MakeConstant(lhs(row, col))} - rhs(row, col);
+        result(row, col) = Constant(lhs(row, col)) - rhs(row, col);
       }
     }
 
@@ -520,8 +517,7 @@ class SLEIPNIR_DLLEXPORT VariableMatrix {
 
     for (int row = 0; row < result.Rows(); ++row) {
       for (int col = 0; col < result.Cols(); ++col) {
-        result(row, col) =
-            lhs(row, col) - Variable{MakeConstant(rhs(row, col))};
+        result(row, col) = lhs(row, col) - Constant(rhs(row, col));
       }
     }
 
@@ -730,6 +726,15 @@ SLEIPNIR_DLLEXPORT VariableMatrix pow(const VariableMatrix& base, double power);
  */
 SLEIPNIR_DLLEXPORT VariableMatrix pow(const VariableMatrix& base,
                                       const VariableMatrix& power);
+
+/**
+ * sign() for VariableMatrices.
+ *
+ * The function is applied element-wise to the argument.
+ *
+ * @param x The argument.
+ */
+SLEIPNIR_DLLEXPORT VariableMatrix sign(const VariableMatrix& x);
 
 /**
  * std::sin() for VariableMatrices.

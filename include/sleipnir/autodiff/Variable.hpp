@@ -271,6 +271,13 @@ using VectorXvar = Eigen::Vector<Variable, Eigen::Dynamic>;
 using MapVectorXvar = Eigen::Map<VectorXvar>;
 
 /**
+ * Returns a Variable representing a constant.
+ *
+ * @param x The constant.
+ */
+SLEIPNIR_DLLEXPORT Variable Constant(double x);
+
+/**
  * std::abs() for Variables.
  *
  * @param x The argument.
@@ -481,6 +488,20 @@ SLEIPNIR_DLLEXPORT Variable pow(const Variable& base, double power);
  * @param power The power.
  */
 SLEIPNIR_DLLEXPORT Variable pow(const Variable& base, const Variable& power);
+
+/**
+ * sign() for Variables.
+ *
+ * @param x The argument.
+ */
+SLEIPNIR_DLLEXPORT Variable sign(double x);
+
+/**
+ * sign() for Variables.
+ *
+ * @param x The argument.
+ */
+SLEIPNIR_DLLEXPORT Variable sign(const Variable& x);
 
 /**
  * std::sin() for Variables.

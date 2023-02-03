@@ -309,7 +309,7 @@ class VariableBlock {
   VariableBlock& operator*=(double rhs) {
     for (int row = 0; row < Rows(); ++row) {
       for (int col = 0; col < Cols(); ++col) {
-        (*this)(row, col) *= Variable{MakeConstant(rhs)};
+        (*this)(row, col) *= Constant(rhs);
       }
     }
 
@@ -343,7 +343,7 @@ class VariableBlock {
   VariableBlock<Mat>& operator/=(double rhs) {
     for (int row = 0; row < Rows(); ++row) {
       for (int col = 0; col < Cols(); ++col) {
-        (*this)(row, col) /= Variable{MakeConstant(rhs)};
+        (*this)(row, col) /= Constant(rhs);
       }
     }
 
@@ -709,6 +709,26 @@ Mat pow(const VariableBlock<Mat>& base, const VariableBlock<Mat>& power) {
   for (int row = 0; row < result.Rows(); ++row) {
     for (int col = 0; col < result.Cols(); ++col) {
       result(row, col) = sleipnir::pow(base(row, col), power(row, col));
+    }
+  }
+
+  return result;
+}
+
+/**
+ * sign() for VariableMatrices.
+ *
+ * The function is applied element-wise to the argument.
+ *
+ * @param x The argument.
+ */
+template <typename Mat>
+Mat sign(const VariableBlock<Mat>& x) {
+  std::remove_cv_t<Mat> result{x.Rows(), x.Cols()};
+
+  for (int row = 0; row < result.Rows(); ++row) {
+    for (int col = 0; col < result.Cols(); ++col) {
+      result(row, col) = sleipnir::sign(x(row, col));
     }
   }
 

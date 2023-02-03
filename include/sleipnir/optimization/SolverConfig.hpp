@@ -5,17 +5,19 @@
 #include <chrono>
 #include <limits>
 
+#include "sleipnir/SymbolExports.hpp"
+
 namespace sleipnir {
 
 /**
  * Solver configuration.
  */
-struct SolverConfig {
+struct SLEIPNIR_DLLEXPORT SolverConfig {
   /// The solver will stop once the error is below this tolerance.
   double tolerance = 1e-6;
 
   /// The maximum number of solver iterations before returning a solution.
-  int maxIterations = 500;
+  int maxIterations = 5000;
 
   /// The maximum elapsed wall clock time before returning a solution.
   std::chrono::duration<double> timeout{
