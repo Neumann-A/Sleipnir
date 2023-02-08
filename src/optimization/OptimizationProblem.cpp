@@ -150,17 +150,20 @@ Eigen::SparseMatrix<double> SparseDiagonal(const Eigen::VectorXd& src) {
  * Applies fraction-to-the-boundary rule to a variable and its iterate, then
  * returns a fraction of the iterate step size within (0, 1].
  *
+ * @param x The variable.
  * @param p The iterate on the variable.
  * @param tau Fraction-to-the-boundary rule scaling factor.
  * @return Fraction of the iterate step size within (0, 1].
  */
-double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& p,
+double FractionToTheBoundaryRule(const Eigen::Ref<const Eigen::VectorXd>& x,
+                                 const Eigen::Ref<const Eigen::VectorXd>& p,
                                  double tau) {
-  // αᵐᵃˣ = max(α ∈ (0, 1] : αp ≥ −τe)
+  // αᵐᵃˣ = max(α ∈ (0, 1] : x + αp ≥ (1−τ)x)
+  //      = max(α ∈ (0, 1] : αp ≥ −τx)
   double alpha = 1.0;
-  for (int i = 0; i < p.rows(); ++i) {
+  for (int i = 0; i < x.rows(); ++i) {
     if (p(i) != 0.0) {
-      while (alpha * p(i) < -tau) {
+      while (alpha * p(i) < -tau * x(i)) {
         alpha *= 0.999;
       }
     }
@@ -1004,13 +1007,13 @@ Eigen::VectorXd OptimizationProblem::InteriorPoint(
         }
       }
 
-      p *= FractionToTheBoundaryRule(p.bottomRows(s.rows()), tau / 2);
+      p *= FractionToTheBoundaryRule(s, p.bottomRows(s.rows()), tau);
 
       // See algorithm 4.1 in [1]
       {
         step = ProjectedCG(p, W, phi, A, delta);
 
-        step *= FractionToTheBoundaryRule(step.bottomRows(s.rows()), tau);
+        step *= FractionToTheBoundaryRule(s, -step.bottomRows(s.rows()), tau);
 
         double fOld = m_f.value().Value();
         SetAD(xAD, x + step.segment(0, x.rows()));
